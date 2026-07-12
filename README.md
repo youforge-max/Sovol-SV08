@@ -1,19 +1,30 @@
 # Fixes You Need After Buying a Sovol SV08
 
-Four things on a stock **Sovol SV08** that you will hit sooner or later:
+Five things on a stock **Sovol SV08** that you will hit sooner or later:
 
 1. **Timelapse auto-render turns itself off after every reboot.**
 2. **Mainsail nags that Moonraker is too old** — and the updater is disabled.
 3. **The macro dashboard is full of cryptic buttons** named `G31`, `G34`, `M106`, `M600`.
 4. **A paused print goes cold after 30 minutes and is ruined.** ← this one costs you real prints
+5. **The bed is warped** — on both the original bed and the "v2" revision. ← this one costs you *every* print
 
-The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) is the one that will actually destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed.
+The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) will destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed. **[Fix 5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) is the one that quietly taxes every single print you make**, and it is the only one here whose real answer is "buy a new part".
 
-Each fix below covers what causes it, how to fix it, how to verify it, and how to revert — including *why the obvious fix is wrong* in three of the four cases.
+Each fix below covers what causes it, how to fix it, how to verify it, and how to revert — including *why the obvious fix is wrong* in most of them.
 
-Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Nothing here is SV08-exclusive — the timelapse bug hits any `moonraker-timelapse` install, and the macro-button problem hits any Klipper printer whose vendor named macros after raw G-code.
+Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Fixes 1–4 are software and cost nothing; **Fix 5 is hardware and costs money** — it is last precisely because it is the one you should be slowest to accept.
+
+Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-timelapse` install, the macro-button problem hits any Klipper printer whose vendor named macros after raw G-code, and the paused-print cool-down hits any Klipper machine with a stock `idle_timeout`. The warped bed is the SV08-specific one.
 
 > **Back up before you touch anything.** `cp file file.bak.$(date +%Y%m%d)`. Every fix below tells you how to revert it.
+
+| # | Problem | Cost | Severity |
+|---|---|---|---|
+| [1](#fix-1--timelapse-auto-render-resets-to-off-after-every-reboot) | Timelapse auto-render resets to OFF on every reboot | Free | Annoyance |
+| [2](#fix-2--mainsail-moonraker-too-old-update-to-at-least-v080-306) | Mainsail: "Moonraker too old" + updater disabled | Free | Cosmetic |
+| [3](#fix-3--mainsail-dashboard-is-full-of-g31--g34--m106--m600-buttons) | Dashboard full of raw G-code buttons | Free | Annoyance |
+| [4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) | Paused print cools down and is ruined | Free | **Destroys prints** |
+| [5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) | Warped bed (v1 **and** v2) — no DIY fix works | 💸 New bed | **Degrades every print** |
 
 ---
 
@@ -371,6 +382,76 @@ Restore `timeout: 1800` in `printer.cfg`, restore the original `_IDLE_TIMEOUT` b
 
 ---
 
+## Fix 5 — The bed is warped — and no DIY fix actually works
+
+This is the only fix on this page that costs money, and it is the only one I found no software answer to. **I tried every DIY solution I could find online. None of them worked.** In the end I replaced the bed, and that was the only thing that actually fixed it.
+
+### Symptoms
+
+* First layer is **perfect in one region and wrong in another** — squished in the middle and barely touching at the edges, or the reverse.
+* You re-level, re-mesh, re-tram. It helps for one print, then it's back.
+* Large prints lift at the corners; small prints in the centre are fine, so you keep half-believing the printer is OK.
+* **The mesh changes shape when the bed is hot.** Probe cold, probe at 60 °C, probe at 100 °C — you get three different surfaces.
+* You buy the **v2 bed** hoping it's fixed. It is not. **Both the original SV08 bed and the v2 revision warp.**
+
+### Cause
+
+The stock plate is a thin aluminium sheet with the heater and magnetic layer laminated to it. It is not flat when it leaves the factory, and — worse — **it does not hold whatever shape it has**. The lamination and the aluminium expand at different rates, so the plate *changes shape as it heats*. That is thermal bow, not a levelling error.
+
+This distinction is the whole reason the usual advice fails.
+
+### Why the DIY fixes don't work — save yourself the weekend
+
+I tried all of these. Here is what each one actually addresses, and why it isn't enough:
+
+| What people tell you to do | Why it doesn't fix it |
+|---|---|
+| **More bed-mesh points / adaptive meshing (KAMP)** | A mesh only corrects a *static* height map. It cannot correct a surface that is a different shape at print temperature than it was when probed. And a mesh is a correction, not a repair — you are asking the Z axis to trace a wave for the whole print. |
+| **Quad gantry level (QGL)** | QGL levels the **gantry** relative to the bed's corners. It makes the gantry parallel to a plane. **A warped bed is not a plane.** QGL cannot fix flatness; it was never meant to. |
+| **Shim / re-torque the bed mounting screws** | Four mounting points can tilt a plate and can pull its corners. They cannot flatten a dome or a wave in the middle. You just move the error around. |
+| **Heat the bed, then re-tighten the screws** | Sounds clever — bolt in the hot shape. But the bed still passes through every temperature on the way there, and you have now pre-stressed the plate. |
+| **Thicker / different PEI spring steel sheet** | The spring steel is 0.5 mm and *flexible by design* — it conforms to whatever is under it. It cannot flatten the plate it sits on. A textured sheet only *hides* a bad first layer. |
+| **Glass or a cast tooling plate on top** | Genuinely flat, and it does work — but you lose the magnetic sheet and flex-to-release, you add mass and thermal lag, and you have to re-do Z offset. It's a workaround with real costs, not a fix. |
+| **Raise the first layer height / slow it down** | Papering over it. You are trading dimensional accuracy and adhesion for the appearance of a fix. |
+
+The pattern: **every software fix compensates, and every mechanical fix tilts.** Neither of those is flatness. If the plate isn't flat and doesn't *stay* flat, there is nothing on the printer to fix.
+
+### Fix — replace the bed
+
+I replaced the stock bed with the **[R3MEN graphite heated bed for the Sovol SV08](https://www.r3men.com/products/graphite-heated-bed-for-sovol-sv08)**. It is a drop-in replacement for the SV08 bed. This is the only thing that solved it for me — first layer became consistent across the whole 350 × 350 plate, hot and cold, and stayed that way.
+
+**Two honest caveats**, because I don't want to sell you anything:
+
+* I am a customer, not affiliated. I have **not** independently measured the plate's flatness with a straightedge and feeler gauges — what I can report is the outcome, which is that the problem went away and has not come back.
+* It is **not cheap**, and you are replacing a part on a printer you just bought. That is a genuinely annoying thing to have to accept. I accepted it only after the DIY route wasted more of my time than the bed cost.
+
+Any bed that is actually flat and actually *stays* flat when hot will solve this. That one is what I used.
+
+### Verify
+
+Do this **hot**, and do it at more than one temperature — that is the whole point.
+
+```bash
+# Heat the bed and let it soak. 10+ minutes, not 2 - the plate keeps moving after the sensor says it's there.
+# Then, in the Mainsail console:
+BED_MESH_CLEAR
+BED_MESH_CALIBRATE
+```
+
+Look at the mesh in Mainsail's **Heightmap** tab and read the **range** (max − min), not the pretty colours — the colour scale auto-fits, so a terrible bed and a great one can look equally dramatic.
+
+* Repeat at **60 °C**, then again at **100 °C**.
+* A good bed: a small range, and **roughly the same shape at both temperatures**.
+* A warped bed: a large range that **changes shape between the two** — that is the thermal bow, and it is the thing a mesh cannot save you from.
+
+Compare before and after. That is your evidence.
+
+### Revert
+
+Bolt the old bed back on and re-run `BED_MESH_CALIBRATE` + Z offset. Keep the stock bed — it is a fine spare, and you will want it if you ever RMA or sell the machine.
+
+---
+
 ## Bonus: two things worth knowing
 
 **Any Mainsail GUI setting lives in Moonraker's database**, namespace `mainsail` (keys: `console`, `control`, `dashboard`, `gcodeViewer`, `general`, `macros`, `miscellaneous`, `uiSettings`, `view`, …), readable and writable via `/server/database/item`. If you need a schema you don't know, grep the served JS bundle (`/assets/index-*.js`) rather than guessing.
@@ -407,7 +488,7 @@ curl -s http://<printer-ip>:7125/server/files/config/printer.cfg
 
 ## Keywords
 
-Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper
+Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness
 
 ## License
 
