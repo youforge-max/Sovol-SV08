@@ -1,8 +1,15 @@
 # Fixes You Need After Buying a Sovol SV08
 
-Three things on a stock **Sovol SV08** that quietly annoy you until you fix them: **timelapse auto-render turns itself off after every reboot**, **Mainsail nags that Moonraker is too old**, and the **macro dashboard is full of cryptic buttons named `G31`, `G34`, `M106`, `M600`**.
+Four things on a stock **Sovol SV08** that you will hit sooner or later:
 
-None of them stop the printer working. All three are a five-minute fix. This is what causes them and how to fix each one properly — including *why* the obvious fix is wrong in two of the three cases.
+1. **Timelapse auto-render turns itself off after every reboot.**
+2. **Mainsail nags that Moonraker is too old** — and the updater is disabled.
+3. **The macro dashboard is full of cryptic buttons** named `G31`, `G34`, `M106`, `M600`.
+4. **A paused print goes cold after 30 minutes and is ruined.** ← this one costs you real prints
+
+The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) is the one that will actually destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed.
+
+Each fix below covers what causes it, how to fix it, how to verify it, and how to revert — including *why the obvious fix is wrong* in three of the four cases.
 
 Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Nothing here is SV08-exclusive — the timelapse bug hits any `moonraker-timelapse` install, and the macro-button problem hits any Klipper printer whose vendor named macros after raw G-code.
 
@@ -273,6 +280,97 @@ Then remove `[include aliases.cfg]` from `printer.cfg` and `FIRMWARE_RESTART`.
 
 ---
 
+## Fix 4 — A paused print goes cold after 30 minutes and is ruined
+
+This is the one that actually costs you money.
+
+### Symptoms
+
+* You trigger a filament change (`M600`), or pause to clear a clog, or swap colour.
+* You get distracted for half an hour.
+* You come back to a **stone-cold printer**. Hotend off, bed off, steppers released.
+* Resume is hopeless: the part has **let go of the bed**, or the nozzle has **cold-locked** with filament in it. The print is gone — sometimes 20 hours in.
+
+### Cause
+
+Stock SV08 ships a **30-minute** idle timeout:
+
+```ini
+[idle_timeout]
+timeout: 1800
+```
+
+Klipper's `idle_timeout` **does not care that you are paused**. It sees no movement, the timer expires, and it runs `TURN_OFF_HEATERS` + `M84`. Thirty minutes is not a lot of time when a filament change turns into "where did I put the other spool".
+
+Mainsail actually ships a proper mechanism for this — `PAUSE` is supposed to call `SET_IDLE_TIMEOUT` to extend the timer while paused, and restore it on `RESUME`. **On the SV08 it is dead twice over:**
+
+1. `mainsail.cfg:22` — `[gcode_macro _CLIENT_VARIABLE]` is **commented out**, so `variable_idle_timeout` defaults to `0`, which means "don't set anything". No-op.
+2. `PAUSE` is **defined twice** — once at `mainsail.cfg:93` and again at `Macro.cfg:414`. `printer.cfg` includes `Macro.cfg` **last**, so Klipper merges the sections and **Sovol's `gcode:` body wins**. Mainsail's `SET_IDLE_TIMEOUT` pause logic never executes.
+
+So on a stock SV08 there is nothing protecting a paused print. The 30-minute timer just runs.
+
+### Fix
+
+Two parts. Both are needed.
+
+**1. Raise the timeout** in `printer.cfg`:
+
+```ini
+[idle_timeout]
+gcode: _IDLE_TIMEOUT
+timeout: 43200          # 12h, was 1800 (30 min)
+```
+
+**2. Make the timeout macro leave the heaters alone when paused.** Find `_IDLE_TIMEOUT` in `Macro.cfg` and branch on print state:
+
+```ini
+[gcode_macro _IDLE_TIMEOUT]
+gcode:
+    {% if printer.print_stats.state == "paused" %}
+      RESPOND TYPE=echo MSG="Idle timeout reached, but print is paused - holding temperature."
+    {% else %}
+      M84
+      TURN_OFF_HEATERS
+    {% endif %}
+```
+
+`FIRMWARE_RESTART`.
+
+### What this actually does — read this bit
+
+The two parts do different jobs, and the second one is the important one:
+
+* The **timeout value** governs *ordinary* idle — job finished, printer sitting there doing nothing. That's the `else` branch, and it still cools down normally. Raising it to 12h just means an idle printer takes longer to switch its heaters off.
+* The **paused branch never cools down at all.** So a pause is **not** "protected for 12 hours" — it is **protected indefinitely**. The timer fires, hits the `paused` branch, prints a message, and does nothing. There is no window to miss.
+
+That is the entire point. A pause that cools down on a timer is a pause that can silently destroy a 20-hour print. A pause that holds temperature can only ever waste electricity.
+
+### ⚠️ The tradeoff — know what you are accepting
+
+**A paused print will now hold the hotend and bed at full temperature forever, unattended, until someone resumes it or cuts the power.** On PETG or ABS that is a nozzle sitting at ~240–260 °C indefinitely.
+
+That is a deliberate trade: **a wasted print is certain if it cools; a hazard is only possible if it stays hot.** But it is a real trade, and you should make it consciously:
+
+* Do not walk away from the house with a print paused.
+* `M600` and `PAUSE` are **one-click in Mainsail with no confirmation dialog** — a stray tap on the dashboard now leaves your printer hot until you notice. (Fix 3 above hides the raw `M600` button, which helps.)
+* If you are not comfortable with that, use the **middle-ground variant** instead: keep the generous timeout but let it *eventually* cool, by deleting the `if/else` and always running `TURN_OFF_HEATERS`. You then get 12 hours of pause instead of infinite — enough for any realistic filament change, with a guaranteed cool-down at the end.
+
+Pick whichever you can live with. Just don't leave it at the stock 30 minutes, because that is long enough to feel safe and short enough to ruin the print.
+
+### Verify
+
+```bash
+curl -s "http://<printer-ip>:7125/printer/objects/query?idle_timeout&pause_resume&print_stats" | python3 -m json.tool
+```
+
+Then test it for real: start a print, `PAUSE`, and confirm the hotend target does not drop.
+
+### Revert
+
+Restore `timeout: 1800` in `printer.cfg`, restore the original `_IDLE_TIMEOUT` body, `FIRMWARE_RESTART`.
+
+---
+
 ## Bonus: two things worth knowing
 
 **Any Mainsail GUI setting lives in Moonraker's database**, namespace `mainsail` (keys: `console`, `control`, `dashboard`, `gcodeViewer`, `general`, `macros`, `miscellaneous`, `uiSettings`, `view`, …), readable and writable via `/server/database/item`. If you need a schema you don't know, grep the served JS bundle (`/assets/index-*.js`) rather than guessing.
@@ -309,7 +407,7 @@ curl -s http://<printer-ip>:7125/server/files/config/printer.cfg
 
 ## Keywords
 
-Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker
+Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper
 
 ## License
 
