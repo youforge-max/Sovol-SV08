@@ -1,5 +1,7 @@
 # Fixes You Need After Buying a Sovol SV08
 
+> Fixes you need after buying a Sovol SV08: warped bed (v1 & v2 — no DIY fix works), paused prints going cold and ruining the job, timelapse autorender resetting every boot, the Moonraker "too old" nag, and cryptic G-code macro buttons.
+
 Five things on a stock **Sovol SV08** that you will hit sooner or later:
 
 1. **Timelapse auto-render turns itself off after every reboot.**
