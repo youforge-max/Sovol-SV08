@@ -2,7 +2,7 @@
 
 > Fixes you need after buying a Sovol SV08: warped bed (v1 & v2 — no DIY fix works), paused prints going cold and ruining the job, timelapse autorender resetting every boot, the Moonraker "too old" nag, and cryptic G-code macro buttons.
 
-Ten things on a stock **Sovol SV08** that you will hit sooner or later:
+Twelve things on a stock **Sovol SV08** that you will hit sooner or later:
 
 1. **Timelapse auto-render turns itself off after every reboot.**
 2. **Mainsail nags that Moonraker is too old** — and the updater is disabled.
@@ -14,6 +14,8 @@ Ten things on a stock **Sovol SV08** that you will hit sooner or later:
 8. **`M106 P1` doesn't address one fan — it sets both.** The `P` parameter is decorative, one branch of the macro is dead code, and the five fans on the machine are documented nowhere. ← this one costs you an afternoon
 9. **Your exhaust fan is PID-controlled by a CPU temperature it cannot possibly affect** — so it runs at **100%, permanently, forever**. If you have an enclosure, it is venting your chamber around the clock and you will never hold a temperature in it. Meanwhile the fan that *can* cool that CPU is PID'd to a target it has already reached, so it never spins up. **Both mainboard fans are wrong, in opposite directions.** ← this one costs you every ABS print
 10. **The filament sensor pauses your print on a single read of a switch.** No debounce, anywhere. One bounce of a mechanical lever on a machine that shakes — and the machine that shakes it is the one running your job — parks the toolhead mid-print with the filament still loaded. ← this one costs you prints, at random, for no reason
+11. **Your printer beacons to a cloud service you never signed up for**, every two seconds, forever — broadcasting its local IP and hostname to `app.obico.io`, unlinked, with crash telemetry opted in on your behalf. ← this one costs you privacy
+12. **The SSH host keys were generated at the factory in December 2023 and shipped to every unit** — and the default user has passwordless `sudo`. ← this one costs you the machine
 
 The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) will destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed. **[Fix 5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) is the one that quietly taxes every single print you make**, and it is the only one here whose real answer is "buy a new part".
 
@@ -21,7 +23,9 @@ The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after
 
 Each fix below covers what causes it, how to fix it, how to verify it, and how to revert — including *why the obvious fix is wrong* in most of them.
 
-Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Fixes 1–4 and 7–10 are software and cost nothing. **Fixes 5 and 6 are hardware and cost money** — be slow to accept those two, and do the free ones first: [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) in particular may be the whole of your [Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) problem.
+**[Fix 12](#fix-12--ssh-host-keys-from-the-factory-and-passwordless-root) is the one to do today.** It is free, it takes one minute, it cannot break anything, and until you do it your printer is trivially impersonable by anyone who has downloaded Sovol's own disk image.
+
+Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Fixes 1–4 and 7–12 are software and cost nothing. **Fixes 5 and 6 are hardware and cost money** — be slow to accept those two, and do the free ones first: [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) in particular may be the whole of your [Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) problem.
 
 **Own an [SV08 Max](#does-any-of-this-apply-to-the-sovol-sv08-max) instead?** Sovol quietly fixed 4, 9 and 10 on it — and shipped Fix 7 forward with the guard *loosened*. Read that section before you apply anything here.
 
@@ -41,6 +45,8 @@ Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-ti
 | [8](#fix-8--m106-p1-does-not-do-what-you-think-and-nobody-documents-the-fans) | `M106 P` is decorative — both part fans always move together | Free | Undocumented |
 | [9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) | Both mainboard fans PID'd to the wrong thing — exhaust stuck at 100%, board fan stuck at 10% | Free | **Wrecks enclosed printing** |
 | [10](#fix-10--one-bounce-of-the-filament-switch-pauses-your-print) | Filament sensor pauses on a single switch read — no debounce | Free | **Pauses prints at random** |
+| [11](#fix-11--your-printer-announces-itself-to-a-cloud-service-you-never-signed-up-for) | Unlinked Obico beacons your LAN IP to a cloud, every 2 s, forever | Free | **Privacy + 20 MB of junk on your eMMC** |
+| [12](#fix-12--ssh-host-keys-from-the-factory-and-passwordless-root) | Factory SSH host keys on every unit + passwordless root | Free | 🔴 **Anyone on your LAN owns the printer** |
 
 ---
 
@@ -1279,6 +1285,210 @@ Ask what the *cost of being wrong* is in each direction. A missed runout for 1.2
 
 ---
 
+## Fix 11 — Your printer announces itself to a cloud service you never signed up for
+
+### Symptoms
+
+None. That's the problem — this one is completely silent.
+
+Out of the box, `moonraker-obico` is **installed, enabled and running**, and it is not linked to anything, because you have never heard of it. So it sits there doing this:
+
+```
+WARNING  obico.app - auth_token not configured. Retry after 2s
+WARNING  obico.printer_discovery - HTTPSConnectionPool(host='app.obico.io', port=443):
+         Max retries exceeded with url: /api/v1/octo/unlinked/
+```
+
+Every two seconds. Forever. My printer's log has that line **1,753 times**, and I never installed Obico, never opened an account, and never clicked anything.
+
+### What it actually sends
+
+`printer_discovery.py` POSTs to `https://app.obico.io/api/v1/octo/unlinked/`, and the payload is built by `_collect_device_info()`:
+
+| Field | Value |
+|---|---|
+| `host_or_ip` | **Your printer's local IP address** |
+| `hostname` | Your printer's hostname |
+| `os`, `arch` | Debian / aarch64 |
+| `rpi_model` | The SBC model string |
+| `machine_type` | `Klipper` |
+| `device_id` | Random per process start |
+
+The *purpose* is legitimate: it's how the Obico app finds an unclaimed printer on your network and offers to claim it. That's a reasonable feature **if you asked for it**. Nobody asked for it. It is on by default, it runs unlinked, and the thing it's broadcasting is the internal address of a device on your LAN that accepts unauthenticated print commands (see [Fix 12](#fix-12--ssh-host-keys-from-the-factory-and-passwordless-root)).
+
+Also in `moonraker-obico.cfg`, uncommented, shipped:
+
+```ini
+[misc]
+sentry_opt = in
+```
+
+Crash telemetry, opted **in**, on your behalf.
+
+### The second-order damage
+
+Those retries are written to disk. On my machine:
+
+```
+569K  moonraker-obico.log
+9.6M  moonraker-obico.log.1
+9.6M  moonraker-obico.log.2
+```
+
+**Nearly 20 MB of "I can't reach a server I was never told to reach"**, written to the same cheap eMMC that [Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) and [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) are about. Sovol found a *third* way to grind that flash.
+
+### Fix
+
+```bash
+ssh sovol@<printer-ip>
+sudo systemctl disable --now moonraker-obico
+```
+
+Then remove the macro include from `printer.cfg` — the Obico first-layer-scan macros get loaded into Klipper whether the service is linked or not:
+
+```ini
+# [include moonraker_obico_macros.cfg]
+```
+
+And bin the dead logs:
+
+```bash
+rm ~/printer_data/logs/moonraker-obico.log*
+```
+
+### If you actually want Obico
+
+Then use it — but point it at **your own server**, not theirs. Obico is open source and self-hostable. Edit `moonraker-obico.cfg`:
+
+```ini
+[server]
+url = http://<your-obico-host>:3334
+
+[misc]
+sentry_opt = out
+```
+
+The complaint here is not "Obico is bad". It's that a printer shipped **dialling a third-party cloud every two seconds, unlinked, with telemetry opted in, and no disclosure.**
+
+### Verify
+
+```bash
+systemctl is-enabled moonraker-obico   # -> disabled
+systemctl is-active moonraker-obico    # -> inactive
+```
+
+The log stops growing. That's it.
+
+### Revert
+
+```bash
+sudo systemctl enable --now moonraker-obico
+```
+
+---
+
+## Fix 12 — SSH host keys from the factory, and passwordless root
+
+> **This is the one where I'd stop reading the fun 3D-printing article and go do something.**
+
+### Symptoms
+
+None, again. Everything works perfectly. That is what a security hole looks like.
+
+### What's wrong
+
+Three things stack, and it's the stacking that matters:
+
+**1. The SSH host keys were generated once, at the factory, and shipped to everyone.**
+
+```bash
+$ ls -l /etc/ssh/ssh_host_*_key
+-rw------- 1 root root  505 Dec 25  2023 /etc/ssh/ssh_host_ecdsa_key
+-rw------- 1 root root  399 Dec 25  2023 /etc/ssh/ssh_host_ed25519_key
+-rw------- 1 root root 2590 Dec 25  2023 /etc/ssh/ssh_host_rsa_key
+
+$ ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+256 SHA256:...  root@ubuntu (ED25519)
+```
+
+**Christmas Day 2023** — the image build date, not your printer's first boot. The comment says `root@ubuntu`, which is the machine that built the image. Every SV08 in the world has **the same private host key**, and it's sitting in a public disk image. Anyone can extract it and impersonate your printer; SSH's entire man-in-the-middle protection is void, and your client will never warn you, because the key it's shown is the key it expects.
+
+This is [Sovol3d/SV08 issue #26](https://github.com/Sovol3d/SV08/issues/26). It is **open, with zero comments**, and the one-line fix was handed to them in the issue text.
+
+**2. The `sovol` user has passwordless sudo.**
+
+```bash
+$ sudo -n true && echo NOPASSWD
+NOPASSWD
+```
+
+**3. The password is the vendor default,** and it's in the manual.
+
+Chain them: anyone who can reach port 22 gets root on the machine that drives a 300 °C heater. And [Moonraker has no authentication at all](#the-security-holes-are-identical), so they don't even need SSH to start a print.
+
+### Fix
+
+**Back up the old keys first** — if something goes wrong you want to be able to put them back.
+
+```bash
+ssh sovol@<printer-ip>
+
+sudo mkdir -p ~/ssh_hostkey_backup-$(date +%Y%m%d)
+sudo cp -a /etc/ssh/ssh_host_* ~/ssh_hostkey_backup-$(date +%Y%m%d)/
+
+sudo rm -f /etc/ssh/ssh_host_*
+sudo ssh-keygen -A
+sudo rm -f /etc/ssh/ssh_host_dsa_key*      # -A also mints a 1024-bit DSA key. Bin it.
+sudo systemctl restart ssh
+```
+
+**This does not touch your login, your `authorized_keys`, or your password.** It changes the printer's *identity*, not your access. Klipper, Moonraker and any running print are completely unaffected — I did it mid-print.
+
+Then change the password, because a fresh host key protecting a default password is theatre:
+
+```bash
+passwd
+```
+
+Your laptop will now — correctly — refuse to connect:
+
+```
+@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@
+```
+
+That warning is the fix working. Clear the stale entry:
+
+```bash
+ssh-keygen -R <printer-ip>
+```
+
+### Verify
+
+```bash
+$ ls -l --time-style=+%F /etc/ssh/ssh_host_ed25519_key
+-rw------- 1 root root 399 2026-07-14 /etc/ssh/ssh_host_ed25519_key   # today, not Dec 2023
+
+$ ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+256 SHA256:...  root@SV08 (ED25519)     # your machine's name, not root@ubuntu
+```
+
+### Revert
+
+```bash
+sudo cp -a ~/ssh_hostkey_backup-YYYYMMDD/* /etc/ssh/
+sudo systemctl restart ssh
+```
+
+(You won't want to. This is the one fix in this document with no downside.)
+
+### While you're here: Moonraker
+
+`moonraker.conf` ships with `host: 0.0.0.0`, all of RFC1918 in `trusted_clients`, and no `force_logins`. **Every device on your network can move your gantry, heat your nozzle and start a print, with no credentials.** Same on the SV08 Max.
+
+If your printer is on a network you don't fully control — a flatshare, an office, a makerspace, a guest VLAN with an IoT gadget on it — narrow `trusted_clients` to the machines that actually need it, and turn on `force_logins`. If it's on your own LAN behind your own router, this is a lower-priority cleanup than the host keys, which are broken *no matter whose network you're on*.
+
+---
+
 ## Does any of this apply to the Sovol SV08 Max?
 
 Some of it. Sovol quietly fixed three of these on the Max — and carried the worst one forward.
@@ -1309,9 +1519,11 @@ Two things worth taking from that if you're retrofitting a chamber sensor to an 
 1. Sovol's own answer to "the CB1 has no spare GPIO" was **to add another MCU**, not to route sensors through the Linux host. That's also what the community does (a €5 Bluepill + I²C sensor).
 2. They did **not** PID the exhaust against chamber temperature — the chamber heater is a separate `watermark` loop. Which is the right call: the target chamber temperature is filament-dependent (ABS wants it hot and the exhaust *off*; PLA and PETG want the opposite), so no single PID target serves both.
 
-### The security holes are identical
+### The Obico beacon and the security holes are identical — the Obico one is worse
 
-The Max's `moonraker.conf` still binds `host: 0.0.0.0`, still lists all of RFC1918 under `trusted_clients`, and still has no `force_logins`. **Anyone on your LAN can move the gantry and start a print, with no credentials.** And [Sovol3d/SV08 issue #26](https://github.com/Sovol3d/SV08/issues/26) — *"SSH host keys not generated on first boot"*, meaning every unit on earth shares one host key and can be MITM'd — is still open, with zero comments, on both machines.
+The Max ships the same `moonraker-obico.cfg`: `url = https://app.obico.io`, `sentry_opt = in`. And unlike the SV08, the Max's `printer.cfg` **includes `moonraker_obico_macros.cfg` on line 7, uncommented** — so the cloud plugin's macros are loaded into Klipper by default. [Fix 11](#fix-11--your-printer-announces-itself-to-a-cloud-service-you-never-signed-up-for) applies as-is.
+
+The Max's `moonraker.conf` still binds `host: 0.0.0.0`, still lists all of RFC1918 under `trusted_clients`, and still has no `force_logins`. **Anyone on your LAN can move the gantry and start a print, with no credentials.** And [Sovol3d/SV08 issue #26](https://github.com/Sovol3d/SV08/issues/26) — *"SSH host keys not generated on first boot"* — is still open, with zero comments, two years on. Assume it's unfixed on the Max and run [Fix 12](#fix-12--ssh-host-keys-from-the-factory-and-passwordless-root) there too; it costs a minute and cannot break anything.
 
 ---
 
@@ -1351,7 +1563,7 @@ curl -s http://<printer-ip>:7125/server/files/config/printer.cfg
 
 ## Keywords
 
-Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement · SV08 fan not working · SV08 M106 P1 both fans · Klipper M106 P parameter ignored · SV08 which fan is fan0 fan1 · SV08 part cooling fan front rear · SV08 fan runs at 0% · fan spinning but Mainsail shows 0 · SV08 hotend fan always on · heater_fan 45C Klipper · SV08 fan2 fan3 temperature_fan · Klipper fan stuck at 10 percent · min_speed 0.1 temperature_fan · SV08 exhaust fan header · SV08 fan_generic fan3 commented out · PA2 pin conflict SV08 · SET_FAN_SPEED vs M106 Klipper · SV08 fan rpm null · SV08 no fan tachometer · control SV08 fans individually · SV08 fan always at 100% · SV08 exhaust fan runs constantly · SV08 fan never turns off · SV08 loud fan idle · temperature_fan stuck at 100 percent · Klipper temperature_fan never reaches target · target_temp below idle temperature · SV08 temperature_host 65C · CB1 host temp high SV08 · SV08 host fan does not exist · SV08 PA2 exhaust fan · SV08 enclosure will not heat up · SV08 chamber temperature too low · SV08 ABS warping enclosure · enclosure never gets warm 3D printer · exhaust fan venting heated chamber · SV08 ASA printing enclosure · Klipper PID fan no authority · SV08 mainboard fan cools CB1 · SV08 fan2 target_temp 50 · SET_TEMPERATURE_FAN_TARGET 0 disables fan · Klipper temperature_fan target 0 turns fan off · SV08 M106 P3 exhaust fan working · SV08 chamber exhaust fan control · Klipper fan_generic off after reboot · Klipper fan_generic sticky between prints · Klipper fan resets to 0 on FIRMWARE_RESTART · OrcaSlicer air filtration SV08 · OrcaSlicer exhaust fan not working · support_air_filtration Orca · activate_air_filtration_during_print · OrcaSlicer ABS air filtration 70% default wrong · OrcaSlicer issue 9002 · PLA gcode has no M106 P3 · SV08 START_PRINT vs PRINT_START · plr.cfg PRINT_START never called · Klipper output_pin always on fan · Klipper shutdown_value fan · hide fan from Mainsail leading underscore · Klipper section name spaces not allowed · SV08 mainboard fan always 100% · SV08 temperature_sensor mcu_temp commented out · SV08 MCU temperature missing from Mainsail · SV08 exhaust throttles when host is cool · Klipper temperature_fan target at idle temp never spins up · SV08 pauses randomly mid print · SV08 false filament runout · Klipper filament sensor false trigger · filament_switch_sensor bounce · SV08 pauses with filament loaded · Pause Print! no reason Klipper · Klipper pause_on_runout no debounce · filament runout debounce Klipper · SV08 switch_pin PE9 · Klipper runout_gcode delayed_gcode · Klipper macro template rendered before execution · Klipper G4 dwell if statement stale · UPDATE_DELAYED_GCODE debounce · Klipper gcode_macro empty gcode variable holder · SV08 filament sensor chatter · pause_delay vs event_delay Klipper · SV08 host CPU over 70C during print · SV08 mainboard fan PA1 empty · Sovol SV08 Max fixes · does SV08 fix apply to SV08 Max · SV08 Max PLR fsync · SV08 Max os.fsync every move · SV08MAX gcode_move.py · SV08 Max power loss recovery bug · SV08 Max move queue overflow · SV08 Max Timer too close · SV08 Max fan map fan0 fan1 fan2 fan3 · SV08 Max exhaust fan PE11 · SV08 Max no temperature_fan · SV08 Max mainboard fan missing · SV08 Max board cooling · SV08 Max paused print heaters · SV08 Max idle_timeout paused · SV08 Max pause_on_runout False · SV08 Max filament sensor buffer_mcu · SV08 Max chamber heater chamber_hot.cfg · SV08 Max M141 M191 chamber · SV08 Max hot_mcu canbus · SV08 chamber temperature sensor retrofit · SV08 Max bed overtemp emergency shutdown · SV08 Max warped bed · Moonraker no authentication SV08 · force_logins Moonraker · Moonraker trusted_clients 0.0.0.0 · SV08 SSH host key not regenerated · Sovol SV08 issue 26 · SV08 MITM ssh host key · SV08 Timer too close heat vs eMMC vs EMI stock
+Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement · SV08 fan not working · SV08 M106 P1 both fans · Klipper M106 P parameter ignored · SV08 which fan is fan0 fan1 · SV08 part cooling fan front rear · SV08 fan runs at 0% · fan spinning but Mainsail shows 0 · SV08 hotend fan always on · heater_fan 45C Klipper · SV08 fan2 fan3 temperature_fan · Klipper fan stuck at 10 percent · min_speed 0.1 temperature_fan · SV08 exhaust fan header · SV08 fan_generic fan3 commented out · PA2 pin conflict SV08 · SET_FAN_SPEED vs M106 Klipper · SV08 fan rpm null · SV08 no fan tachometer · control SV08 fans individually · SV08 fan always at 100% · SV08 exhaust fan runs constantly · SV08 fan never turns off · SV08 loud fan idle · temperature_fan stuck at 100 percent · Klipper temperature_fan never reaches target · target_temp below idle temperature · SV08 temperature_host 65C · CB1 host temp high SV08 · SV08 host fan does not exist · SV08 PA2 exhaust fan · SV08 enclosure will not heat up · SV08 chamber temperature too low · SV08 ABS warping enclosure · enclosure never gets warm 3D printer · exhaust fan venting heated chamber · SV08 ASA printing enclosure · Klipper PID fan no authority · SV08 mainboard fan cools CB1 · SV08 fan2 target_temp 50 · SET_TEMPERATURE_FAN_TARGET 0 disables fan · Klipper temperature_fan target 0 turns fan off · SV08 M106 P3 exhaust fan working · SV08 chamber exhaust fan control · Klipper fan_generic off after reboot · Klipper fan_generic sticky between prints · Klipper fan resets to 0 on FIRMWARE_RESTART · OrcaSlicer air filtration SV08 · OrcaSlicer exhaust fan not working · support_air_filtration Orca · activate_air_filtration_during_print · OrcaSlicer ABS air filtration 70% default wrong · OrcaSlicer issue 9002 · PLA gcode has no M106 P3 · SV08 START_PRINT vs PRINT_START · plr.cfg PRINT_START never called · Klipper output_pin always on fan · Klipper shutdown_value fan · hide fan from Mainsail leading underscore · Klipper section name spaces not allowed · SV08 mainboard fan always 100% · SV08 temperature_sensor mcu_temp commented out · SV08 MCU temperature missing from Mainsail · SV08 exhaust throttles when host is cool · Klipper temperature_fan target at idle temp never spins up · SV08 pauses randomly mid print · SV08 false filament runout · Klipper filament sensor false trigger · filament_switch_sensor bounce · SV08 pauses with filament loaded · Pause Print! no reason Klipper · Klipper pause_on_runout no debounce · filament runout debounce Klipper · SV08 switch_pin PE9 · Klipper runout_gcode delayed_gcode · Klipper macro template rendered before execution · Klipper G4 dwell if statement stale · UPDATE_DELAYED_GCODE debounce · Klipper gcode_macro empty gcode variable holder · SV08 filament sensor chatter · pause_delay vs event_delay Klipper · SV08 host CPU over 70C during print · SV08 mainboard fan PA1 empty · Sovol SV08 Max fixes · does SV08 fix apply to SV08 Max · SV08 Max PLR fsync · SV08 Max os.fsync every move · SV08MAX gcode_move.py · SV08 Max power loss recovery bug · SV08 Max move queue overflow · SV08 Max Timer too close · SV08 Max fan map fan0 fan1 fan2 fan3 · SV08 Max exhaust fan PE11 · SV08 Max no temperature_fan · SV08 Max mainboard fan missing · SV08 Max board cooling · SV08 Max paused print heaters · SV08 Max idle_timeout paused · SV08 Max pause_on_runout False · SV08 Max filament sensor buffer_mcu · SV08 Max chamber heater chamber_hot.cfg · SV08 Max M141 M191 chamber · SV08 Max hot_mcu canbus · SV08 chamber temperature sensor retrofit · SV08 Max bed overtemp emergency shutdown · SV08 Max warped bed · Moonraker no authentication SV08 · force_logins Moonraker · Moonraker trusted_clients 0.0.0.0 · SV08 SSH host key not regenerated · Sovol SV08 issue 26 · SV08 MITM ssh host key · SV08 Timer too close heat vs eMMC vs EMI · SV08 obico default enabled · moonraker-obico auth_token not configured · Sovol printer phones home · app.obico.io unlinked · printer_discovery announce · SV08 telemetry sentry_opt · disable moonraker-obico · SV08 obico log 10MB · Sovol SV08 privacy · SV08 cloud connection default · self-host Obico SV08 · SV08 SSH host key factory · ssh_host_ed25519_key Dec 2023 · root@ubuntu host key · SV08 MITM · Sovol SV08 default password · SV08 passwordless sudo · SV08 NOPASSWD root · ssh-keygen -A SV08 · regenerate ssh host keys Sovol · REMOTE HOST IDENTIFICATION HAS CHANGED SV08 · SV08 security · Moonraker force_logins SV08 · SV08 unauthenticated Moonraker stock
 
 ## License
 
