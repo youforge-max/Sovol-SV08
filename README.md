@@ -725,17 +725,23 @@ Four things fall out of that table immediately:
 - **`hotend_fan` is the only fan on this machine with a tachometer** (`extra_mcu:PA1`). `fan0`/`fan1` report `"rpm": null` forever — you cannot detect a dead part-cooling blower in software. Check it by eye.
 - **The Klipper names do not line up with the mainboard silkscreen.** `fan0` and `fan1` are on the **toolhead** board — the `extra_mcu:` prefix is the tell. The mainboard has its own headers silkscreened `FAN1`/`FAN2`/`FAN3`, and Klipper only ever drives two fans down there: `PA1` and `PA2`, which it calls **`fan2` and `fan3`**. So if you drive `fan1` and stare at the mainboard waiting for something to move, nothing will — you're watching the wrong board.
 
-Here is the mainboard, decoded — verified on hardware by driving each pin and watching what responded:
+Here is the whole mainboard, decoded — every row verified on hardware by driving the pin and watching what responded. **Three headers marked `FAN*`, but only two fans, and neither carries the number printed next to it:**
 
 | Silkscreen | MCU pin | Klipper object | Fitted from the factory? |
 |---|---|---|---|
 | `FAN1` | `PA1` | `temperature_fan fan2` | **No.** Bare pins, no connector housing. This is where the [mainboard-fan mod](#and-the-other-mainboard-fan-loop-is-empty) goes. |
 | `FAN2` | `PA2` | `temperature_fan fan3` | Yes — **the exhaust fan**. |
-| `FAN3` | see below | not a fan | Occupied — but **not by a fan.** The wire in it is labelled **`LED1`**. This header drives the light, not airflow. |
+| `FAN3` | `PA3` | `output_pin main_led` | Occupied — but **not by a fan.** It drives **the LED**. The wire in it is labelled `LED1`. |
 
-**Only two of the three headers silkscreened `FAN*` are fans.** `FAN3` has a fan label printed above an LED connector. If you are chasing a "third fan" on this board, stop: it does not exist.
+**Only two of the three headers silkscreened `FAN*` are fans.** `FAN3` is a fan label printed above the LED connector. If you are chasing a "third fan" on this board, stop: it does not exist.
 
-Which pin `FAN3` actually sits on is still open. Klipper's only LED output is `[output_pin main_led]` on `PA3`, so `FAN3 = PA3` is the obvious reading — but an unswitched power tap for the LED would look identical from the outside, and I have not yet proved which. Cheap test: `SET_PIN PIN=main_led VALUE=0`. LED goes dark → it's `PA3`. LED stays lit → it's a dumb power tap and Klipper never touches that header.
+That last row is confirmed on hardware, not inferred — pulse the pin and the light blinks with it:
+
+```bash
+# LED off / on. Stock value is 1.0 (on) -- put it back when you're done.
+curl -s -X POST "http://<printer-ip>:7125/printer/gcode/script?script=SET_PIN%20PIN%3Dmain_led%20VALUE%3D0"
+curl -s -X POST "http://<printer-ip>:7125/printer/gcode/script?script=SET_PIN%20PIN%3Dmain_led%20VALUE%3D1"
+```
 
 Sovol's config comments (`#header 1 from the left`, `#header 2 from the left`) count the same way the silkscreen does. The *names* are what's shifted: **board `FAN1` is Klipper `fan2`, board `FAN2` is Klipper `fan3`.** Check all of this before you unplug anything in anger.
 
