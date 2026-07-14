@@ -2,7 +2,7 @@
 
 > Fixes you need after buying a Sovol SV08: warped bed (v1 & v2 — no DIY fix works), paused prints going cold and ruining the job, timelapse autorender resetting every boot, the Moonraker "too old" nag, and cryptic G-code macro buttons.
 
-Nine things on a stock **Sovol SV08** that you will hit sooner or later:
+Ten things on a stock **Sovol SV08** that you will hit sooner or later:
 
 1. **Timelapse auto-render turns itself off after every reboot.**
 2. **Mainsail nags that Moonraker is too old** — and the updater is disabled.
@@ -13,6 +13,7 @@ Nine things on a stock **Sovol SV08** that you will hit sooner or later:
 7. **Power-loss recovery calls `os.fsync()` on every single move.** It kills prints with organic supports or z-hop *now*, and it is what makes a slow or worn eMMC (#6) fatal. **Do this one first — it's free.** ← this one costs you both
 8. **`M106 P1` doesn't address one fan — it sets both.** The `P` parameter is decorative, one branch of the macro is dead code, and the five fans on the machine are documented nowhere. ← this one costs you an afternoon
 9. **Your exhaust fan is PID-controlled by a CPU temperature it cannot possibly affect** — so it runs at **100%, permanently, forever**. If you have an enclosure, it is venting your chamber around the clock and you will never hold a temperature in it. Meanwhile the fan that *can* cool that CPU is PID'd to a target it has already reached, so it never spins up. **Both mainboard fans are wrong, in opposite directions.** ← this one costs you every ABS print
+10. **The filament sensor pauses your print on a single read of a switch.** No debounce, anywhere. One bounce of a mechanical lever on a machine that shakes — and the machine that shakes it is the one running your job — parks the toolhead mid-print with the filament still loaded. ← this one costs you prints, at random, for no reason
 
 The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) will destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed. **[Fix 5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) is the one that quietly taxes every single print you make**, and it is the only one here whose real answer is "buy a new part".
 
@@ -20,7 +21,7 @@ The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after
 
 Each fix below covers what causes it, how to fix it, how to verify it, and how to revert — including *why the obvious fix is wrong* in most of them.
 
-Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Fixes 1–4 and 7–9 are software and cost nothing. **Fixes 5 and 6 are hardware and cost money** — be slow to accept those two, and do the free ones first: [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) in particular may be the whole of your [Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) problem.
+Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Fixes 1–4 and 7–10 are software and cost nothing. **Fixes 5 and 6 are hardware and cost money** — be slow to accept those two, and do the free ones first: [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) in particular may be the whole of your [Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) problem.
 
 Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-timelapse` install, the macro-button problem hits any Klipper printer whose vendor named macros after raw G-code, and the paused-print cool-down hits any Klipper machine with a stock `idle_timeout`. The warped bed is the SV08-specific one.
 
@@ -37,6 +38,7 @@ Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-ti
 | [7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) | PLR `os.fsync()` per move → `move queue overflow`, dead flash | Free | **Destroys prints + your eMMC** |
 | [8](#fix-8--m106-p1-does-not-do-what-you-think-and-nobody-documents-the-fans) | `M106 P` is decorative — both part fans always move together | Free | Undocumented |
 | [9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) | Both mainboard fans PID'd to the wrong thing — exhaust stuck at 100%, board fan stuck at 10% | Free | **Wrecks enclosed printing** |
+| [10](#fix-10--one-bounce-of-the-filament-switch-pauses-your-print) | Filament sensor pauses on a single switch read — no debounce | Free | **Pauses prints at random** |
 
 ---
 
@@ -1086,7 +1088,16 @@ Idle, steppers off, heaters off — stock config versus the config above:
 
 And the exhaust now sits wherever you put it, instead of wherever the CPU's temperature happens to leave it.
 
-**These are idle figures — a floor, not the answer.** The complaint that started all of this was a host CPU over 70 °C *during a print*, with the bed radiating into the bay. A fan's worth grows with the temperature difference it works across, so expect more than 11.7 K when it matters. But that measurement is still owed.
+**Those are idle figures — a floor, not the answer.** The complaint that started all of this was a host CPU over 70 °C *during a print*, with the bed radiating into the bay. So here is the measurement that was owed: a PETG job (bed 75 °C, hotend 245 °C), enclosed, panels on, sampled every 30 s. At 32% through, with everything thermally settled, the bottom-plate fan was switched off and then back on:
+
+| | board fan ON | board fan OFF |
+|---|---|---|
+| Mainboard host CPU | 59.4 °C | **71.2 °C** |
+| Mainboard MCU | 47.1 °C | **64.1 °C** |
+
+**The complaint reproduces on demand.** Take that fan away and the host goes over 70 °C under print load — 11.8 K, matching the 11.7 K seen at idle almost exactly. The mainboard MCU is the bigger surprise: **17 K**, and still climbing when the fan went back on. Recovery is fast — host back to 60.9 °C and MCU to 48.4 °C within four minutes.
+
+**A stock SV08 ships with PA1 empty.** There is no bottom-plate fan at all. So this is not drift, and it is not a fault that developed — it is what the machine does out of the box, in an enclosure, and the fan that Sovol *did* wire up (the exhaust) is PID'd to a sensor it cannot influence. Fit a fan to PA1 and drive it from `[output_pin _mainboard_fan]` as above.
 
 ### Revert
 
@@ -1097,6 +1108,134 @@ Restore `[temperature_fan fan2]` and `[temperature_fan fan3]`, re-comment `[temp
 **A `temperature_fan` whose target is below its sensor's idle temperature is not a fan — it's a fan permanently switched on, wearing out, with a PID bolted to the front of it for decoration.** Klipper will not warn you. Mainsail will cheerfully render it as 100% and you'll assume that's the machine working hard.
 
 Before you trust *any* closed loop, ask the boring question: **can this actuator actually move this sensor?** If the answer is no, the loop is a lie, and no amount of tuning will make it true.
+
+---
+
+## Fix 10 — One bounce of the filament switch pauses your print
+
+### Symptoms
+
+A print pauses on its own, mid-job. The toolhead parks, Z lifts, and the job sits there cooling. There is filament in the sensor. There was filament in the sensor the whole time. Mainsail shows no error — the printer is `ready`, `print_stats.message` is empty, and the console says only:
+
+```
+// Pause Print!
+```
+
+Resume, and it prints on happily. It may not happen again for days.
+
+### Cause
+
+Stock config:
+
+```ini
+[filament_switch_sensor filament_sensor]
+pause_on_runout: True
+event_delay: 3.0
+pause_delay: 0.5
+switch_pin: PE9
+```
+
+`pause_on_runout: True` hands the decision to Klipper's built-in handler, and that handler **pauses on a single read of the switch.** PE9 is a mechanical lever. A machine that slams a 300 mm gantry around at 10000 mm/s² vibrates, the lever chatters, the switch reads open for a few milliseconds, and Klipper — doing exactly what it was told — pauses your print.
+
+There is no debounce anywhere in that config. `pause_delay: 0.5` is not one: it is how long Klipper *waits before pausing*, not how long it waits before *believing* the sensor. `event_delay: 3.0` is not one either: it is the minimum gap between two events, so it stops the same bounce firing twice — it does nothing about the first one.
+
+**The tell that it was a bounce and not a real runout:** query the sensor after the pause and it reads `filament_detected: true`. The filament never went anywhere.
+
+```bash
+curl -s "http://<printer-ip>:7125/printer/objects/query?filament_switch_sensor+filament_sensor"
+```
+
+### The mistake to avoid
+
+The obvious fix is to re-read the switch after a short delay, and the obvious way to wait is `G4`:
+
+```ini
+# DOES NOT WORK. Two separate reasons.
+[gcode_macro _RUNOUT_DEBOUNCE]
+gcode:
+    G4 P1200
+    {% if printer["filament_switch_sensor filament_sensor"].filament_detected %}
+        ...
+```
+
+**Reason one: Klipper renders the entire macro template before it executes any of it.** That `{% if %}` is evaluated at render time — *before* the `G4` has run. You get the same stale reading that caused the pause, every time. This trips people up constantly and it fails silently, which is the worst way to fail.
+
+**Reason two: `G4` is a dwell in the motion queue.** Even if the timing worked, you would be stopping a hot nozzle over the part for over a second, on every bounce, to decide whether you needed to stop at all. You would be trading a pause for a blob.
+
+### Fix
+
+Turn off the built-in pause, and re-check from a **`delayed_gcode`**. A `delayed_gcode` fires from Klipper's reactor, not from the motion queue: the toolhead never stops, and the template is rendered *when it fires*, so the sensor read is fresh.
+
+In `printer.cfg`, replace the `[filament_switch_sensor]` block with:
+
+```ini
+[filament_switch_sensor filament_sensor]
+# pause_on_runout is False on purpose: the built-in pause fires on a single
+# switch read, so one bounce of the PE9 lever kills the print. _runout_recheck
+# re-reads the switch after settle_time and only pauses if it is still open.
+pause_on_runout: False
+event_delay: 3.0
+pause_delay: 0.5
+switch_pin: PE9
+runout_gcode:
+    UPDATE_DELAYED_GCODE ID=_runout_recheck DURATION={printer["gcode_macro _runout_var"].settle_time}
+
+[gcode_macro _runout_var]
+variable_settle_time: 1.2
+gcode:
+
+# Runs from the reactor, not the motion queue, so the toolhead never stops and
+# no blob is left on the part. A real runout loses settle_time of air printing.
+[delayed_gcode _runout_recheck]
+gcode:
+    {% if printer["filament_switch_sensor filament_sensor"].filament_detected %}
+        {action_respond_info("Filament sensor bounced - filament still present after settle. Print continues.")}
+    {% else %}
+        {action_respond_info("Filament runout confirmed after settle - pausing.")}
+        PAUSE
+    {% endif %}
+```
+
+`FIRMWARE_RESTART`.
+
+The empty `gcode:` under `_runout_var` is not a typo — it is the standard Klipper idiom for a macro that exists only to hold a variable. Sovol's own `_global_var` in `Macro.cfg` is written the same way.
+
+### What this actually costs you
+
+**On a bounce:** nothing. The toolhead never stops, you get one line in the console, the print continues.
+
+**On a real runout:** you print `settle_time` of air — 1.2 seconds — before pausing. That is a centimetre or two of empty extrusion at the point where the filament ran out, which is precisely where you were going to have a defect anyway, and `PAUSE` parks and lifts regardless. It costs nothing that mattered.
+
+1.2 s is a starting point, not a law. Raise `settle_time` if you still get spurious pauses; lower it if you dislike the air-printing. It is a plain variable — no macro edits.
+
+### Verify
+
+You cannot easily fake a bounce, so verify the two ends instead.
+
+**A real runout still pauses.** Pull the filament out of the sensor mid-print. Expect, ~1.2 s later:
+
+```
+// Filament runout confirmed after settle - pausing.
+```
+
+**The recheck macro is live and reads the sensor correctly.** With filament loaded, fire the delayed gcode by hand — it should decline to pause:
+
+```bash
+curl -s -X POST "http://<printer-ip>:7125/printer/gcode/script?script=UPDATE_DELAYED_GCODE%20ID%3D_runout_recheck%20DURATION%3D1"
+# -> // Filament sensor bounced - filament still present after settle. Print continues.
+```
+
+If that second one pauses a loaded printer, your sensor is reading open with filament in it and you have a hardware problem, not a bounce problem.
+
+### Revert
+
+Set `pause_on_runout: True`, delete `runout_gcode:`, `[gcode_macro _runout_var]` and `[delayed_gcode _runout_recheck]`, `FIRMWARE_RESTART`.
+
+### The general trap
+
+**A sensor is not a fact, and a switch is not a sensor — it is a switch, with a lever, on a moving machine.** Any handler that acts on a single sample of a mechanical contact will eventually act on a bounce. The stock config wires a one-sample read of a chattering lever directly to "destroy the current job", and the printer that shakes the lever is the same printer that is running the job.
+
+Ask what the *cost of being wrong* is in each direction. A missed runout for 1.2 s costs two centimetres of air. A false runout costs a print. When the costs are that lopsided, sample twice.
 
 ---
 
@@ -1136,7 +1275,7 @@ curl -s http://<printer-ip>:7125/server/files/config/printer.cfg
 
 ## Keywords
 
-Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement · SV08 fan not working · SV08 M106 P1 both fans · Klipper M106 P parameter ignored · SV08 which fan is fan0 fan1 · SV08 part cooling fan front rear · SV08 fan runs at 0% · fan spinning but Mainsail shows 0 · SV08 hotend fan always on · heater_fan 45C Klipper · SV08 fan2 fan3 temperature_fan · Klipper fan stuck at 10 percent · min_speed 0.1 temperature_fan · SV08 exhaust fan header · SV08 fan_generic fan3 commented out · PA2 pin conflict SV08 · SET_FAN_SPEED vs M106 Klipper · SV08 fan rpm null · SV08 no fan tachometer · control SV08 fans individually · SV08 fan always at 100% · SV08 exhaust fan runs constantly · SV08 fan never turns off · SV08 loud fan idle · temperature_fan stuck at 100 percent · Klipper temperature_fan never reaches target · target_temp below idle temperature · SV08 temperature_host 65C · CB1 host temp high SV08 · SV08 host fan does not exist · SV08 PA2 exhaust fan · SV08 enclosure will not heat up · SV08 chamber temperature too low · SV08 ABS warping enclosure · enclosure never gets warm 3D printer · exhaust fan venting heated chamber · SV08 ASA printing enclosure · Klipper PID fan no authority · SV08 mainboard fan cools CB1 · SV08 fan2 target_temp 50 · SET_TEMPERATURE_FAN_TARGET 0 disables fan · Klipper temperature_fan target 0 turns fan off · SV08 M106 P3 exhaust fan working · SV08 chamber exhaust fan control · Klipper fan_generic off after reboot · Klipper fan_generic sticky between prints · Klipper fan resets to 0 on FIRMWARE_RESTART · OrcaSlicer air filtration SV08 · OrcaSlicer exhaust fan not working · support_air_filtration Orca · activate_air_filtration_during_print · OrcaSlicer ABS air filtration 70% default wrong · OrcaSlicer issue 9002 · PLA gcode has no M106 P3 · SV08 START_PRINT vs PRINT_START · plr.cfg PRINT_START never called · Klipper output_pin always on fan · Klipper shutdown_value fan · hide fan from Mainsail leading underscore · Klipper section name spaces not allowed · SV08 mainboard fan always 100% · SV08 temperature_sensor mcu_temp commented out · SV08 MCU temperature missing from Mainsail · SV08 exhaust throttles when host is cool · Klipper temperature_fan target at idle temp never spins up
+Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement · SV08 fan not working · SV08 M106 P1 both fans · Klipper M106 P parameter ignored · SV08 which fan is fan0 fan1 · SV08 part cooling fan front rear · SV08 fan runs at 0% · fan spinning but Mainsail shows 0 · SV08 hotend fan always on · heater_fan 45C Klipper · SV08 fan2 fan3 temperature_fan · Klipper fan stuck at 10 percent · min_speed 0.1 temperature_fan · SV08 exhaust fan header · SV08 fan_generic fan3 commented out · PA2 pin conflict SV08 · SET_FAN_SPEED vs M106 Klipper · SV08 fan rpm null · SV08 no fan tachometer · control SV08 fans individually · SV08 fan always at 100% · SV08 exhaust fan runs constantly · SV08 fan never turns off · SV08 loud fan idle · temperature_fan stuck at 100 percent · Klipper temperature_fan never reaches target · target_temp below idle temperature · SV08 temperature_host 65C · CB1 host temp high SV08 · SV08 host fan does not exist · SV08 PA2 exhaust fan · SV08 enclosure will not heat up · SV08 chamber temperature too low · SV08 ABS warping enclosure · enclosure never gets warm 3D printer · exhaust fan venting heated chamber · SV08 ASA printing enclosure · Klipper PID fan no authority · SV08 mainboard fan cools CB1 · SV08 fan2 target_temp 50 · SET_TEMPERATURE_FAN_TARGET 0 disables fan · Klipper temperature_fan target 0 turns fan off · SV08 M106 P3 exhaust fan working · SV08 chamber exhaust fan control · Klipper fan_generic off after reboot · Klipper fan_generic sticky between prints · Klipper fan resets to 0 on FIRMWARE_RESTART · OrcaSlicer air filtration SV08 · OrcaSlicer exhaust fan not working · support_air_filtration Orca · activate_air_filtration_during_print · OrcaSlicer ABS air filtration 70% default wrong · OrcaSlicer issue 9002 · PLA gcode has no M106 P3 · SV08 START_PRINT vs PRINT_START · plr.cfg PRINT_START never called · Klipper output_pin always on fan · Klipper shutdown_value fan · hide fan from Mainsail leading underscore · Klipper section name spaces not allowed · SV08 mainboard fan always 100% · SV08 temperature_sensor mcu_temp commented out · SV08 MCU temperature missing from Mainsail · SV08 exhaust throttles when host is cool · Klipper temperature_fan target at idle temp never spins up · SV08 pauses randomly mid print · SV08 false filament runout · Klipper filament sensor false trigger · filament_switch_sensor bounce · SV08 pauses with filament loaded · Pause Print! no reason Klipper · Klipper pause_on_runout no debounce · filament runout debounce Klipper · SV08 switch_pin PE9 · Klipper runout_gcode delayed_gcode · Klipper macro template rendered before execution · Klipper G4 dwell if statement stale · UPDATE_DELAYED_GCODE debounce · Klipper gcode_macro empty gcode variable holder · SV08 filament sensor chatter · pause_delay vs event_delay Klipper · SV08 host CPU over 70C during print · SV08 mainboard fan PA1 empty stock
 
 ## License
 
