@@ -2,7 +2,7 @@
 
 > Fixes you need after buying a Sovol SV08: warped bed (v1 & v2 — no DIY fix works), paused prints going cold and ruining the job, timelapse autorender resetting every boot, the Moonraker "too old" nag, and cryptic G-code macro buttons.
 
-Seven things on a stock **Sovol SV08** that you will hit sooner or later:
+Eight things on a stock **Sovol SV08** that you will hit sooner or later:
 
 1. **Timelapse auto-render turns itself off after every reboot.**
 2. **Mainsail nags that Moonraker is too old** — and the updater is disabled.
@@ -11,6 +11,7 @@ Seven things on a stock **Sovol SV08** that you will hit sooner or later:
 5. **The bed is warped** — on both the original bed and the "v2" revision. ← this one costs you *every* print
 6. **Random `Timer too close` shutdowns mid-print.** Every forum will tell you it's heat or EMI. On my machine it was the **stock 8 GB eMMC** — swapping it fixed what nothing else would. ← this one costs you the board
 7. **Power-loss recovery calls `os.fsync()` on every single move.** It kills prints with organic supports or z-hop *now*, and it is what makes a slow or worn eMMC (#6) fatal. **Do this one first — it's free.** ← this one costs you both
+8. **`M106 P1` doesn't address one fan — it sets both.** The `P` parameter is decorative, one branch of the macro is dead code, and the five fans on the machine are documented nowhere. ← this one costs you an afternoon
 
 The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) will destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed. **[Fix 5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) is the one that quietly taxes every single print you make**, and it is the only one here whose real answer is "buy a new part".
 
@@ -18,7 +19,7 @@ The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after
 
 Each fix below covers what causes it, how to fix it, how to verify it, and how to revert — including *why the obvious fix is wrong* in most of them.
 
-Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Fixes 1–4 are software and cost nothing; **Fix 5 is hardware and costs money** — it is last precisely because it is the one you should be slowest to accept.
+Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Fixes 1–4, 7 and 8 are software and cost nothing. **Fixes 5 and 6 are hardware and cost money** — be slow to accept those two, and do the free ones first: [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) in particular may be the whole of your [Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) problem.
 
 Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-timelapse` install, the macro-button problem hits any Klipper printer whose vendor named macros after raw G-code, and the paused-print cool-down hits any Klipper machine with a stock `idle_timeout`. The warped bed is the SV08-specific one.
 
@@ -33,6 +34,7 @@ Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-ti
 | [5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) | Warped bed (v1 **and** v2) — no DIY fix works | 💸 New bed | **Degrades every print** |
 | [6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) | `Timer too close` shutdowns — it's the eMMC, not heat | 💸 New eMMC | **Destroys prints + the board** |
 | [7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) | PLR `os.fsync()` per move → `move queue overflow`, dead flash | Free | **Destroys prints + your eMMC** |
+| [8](#fix-8--m106-p1-does-not-do-what-you-think-and-nobody-documents-the-fans) | `M106 P` is decorative — both part fans always move together | Free | Undocumented |
 
 ---
 
@@ -694,6 +696,86 @@ Note that a Klipper update from Sovol will also restore their version — and re
 
 ---
 
+## Fix 8 — `M106 P1` does not do what you think, and nobody documents the fans
+
+### Symptoms
+
+You want to run the two part-cooling fans at different speeds — one blows across the part, the other at it — so you send `M106 P1 S128`. **Both** fans go to half speed. `M106 P0 S255` does the same thing in reverse. There is no combination of `P` that addresses one fan.
+
+Meanwhile a fan you never asked for is audibly running while Mainsail shows every fan at `0%`, and two more sit permanently at 10% and never stop. Nobody can tell you which fan is which, because Sovol ships no fan documentation at all.
+
+### The map (there are five fans, not two)
+
+Read straight off a stock machine. Only the first two are yours to control:
+
+| Name | Klipper type | Pin | What it physically is | Tach | Reachable by `M106`? |
+|---|---|---|---|---|---|
+| `fan0` | `fan_generic` | `extra_mcu:PA7` | part cooling, **rear** — blows *across* the part | no | only together with `fan1` |
+| `fan1` | `fan_generic` | `extra_mcu:PB1` | part cooling, **front** | no | only together with `fan0` |
+| `hotend_fan` | `heater_fan` | `extra_mcu:PA6` | heatbreak fan — thermostatic, kicks in at extruder ≥ 45 °C | **yes** | **no** |
+| `fan2` | `temperature_fan` | `PA1` (main MCU) | **mainboard fan** — PID to 50 °C on `temperature_mcu` | no | **no** |
+| `fan3` | `temperature_fan` | `PA2` (main MCU) | **host/CPU fan** — PID to 60 °C on `temperature_host` | no | **no** |
+
+Three things fall out of that table immediately:
+
+- **The fan you hear while everything reads 0% is `hotend_fan`.** It's a `heater_fan` tied to the extruder — it turns itself on at 45 °C and is invisible to `M106` and to the fan sliders. Working as designed. Stop looking for the bug.
+- **`fan2` and `fan3` never stop** because both have `min_speed: 0.1`. A permanent 10% floor. That is not a stuck fan.
+- **`hotend_fan` is the only fan on this machine with a tachometer** (`extra_mcu:PA1`). `fan0`/`fan1` report `"rpm": null` forever — you cannot detect a dead part-cooling blower in software. Check it by eye.
+
+### Cause — the `M106` macro
+
+The SV08 has no `[fan]` section, so stock `M106` has nothing to drive. Sovol bridges that with a macro (`Macro.cfg`, ~line 653):
+
+```jinja
+[gcode_macro M106]
+gcode:
+    {% set fan = 'fan' + (params.P|int if params.P is defined else 0)|string %}
+    {% set speed = (params.S|float / 255 if params.S is defined else 1.0) %}
+    {% if fan == 'fan3'%}
+            SET_FAN_SPEED FAN={fan} SPEED={speed}
+    {% else %}
+        SET_FAN_SPEED FAN={'fan0'} SPEED={speed}
+        SET_FAN_SPEED FAN={'fan1'} SPEED={speed}
+    {% endif %}
+```
+
+It parses `P` into a fan name, then **throws it away**. Only `fan3` is special-cased; every other value of `P` — including `P0` and `P1`, the two fans you actually have — falls into the `else` and sets *both*. The `P` parameter is decorative.
+
+And the one branch that does use `P` is **dead**: `SET_FAN_SPEED` only accepts a `fan_generic`, but `fan3` is a `temperature_fan`, so `M106 P3` errors out with an unknown-fan complaint. That branch was written for `[fan_generic fan3] # exhaust fan` — which is sitting **commented out** in `printer.cfg`, on pin `PA2`. The same `PA2` that `temperature_fan fan3` now owns.
+
+> **Read that last part before you wire up an exhaust or filter fan.** Header 2 is not free. It's the host fan. Uncomment `[fan_generic fan3]` and you have two config sections fighting over one pin.
+
+### Fix
+
+There isn't one to apply — and that's the point. Nothing here is broken hardware; it's undocumented behaviour that sends people chasing ghosts. What you do instead:
+
+**To drive one part fan, bypass `M106` entirely** and talk to the fan directly:
+
+```gcode
+SET_FAN_SPEED FAN=fan0 SPEED=0.5     ; rear fan only, 0.0–1.0 (not 0–255)
+SET_FAN_SPEED FAN=fan1 SPEED=1.0     ; front fan only
+```
+
+Put those in your slicer's custom gcode if you want asymmetric cooling. `M106` will always hit both.
+
+**Don't try to control `fan2`, `fan3` or `hotend_fan`.** They're closed-loop on temperature and they're right. If you genuinely need to move the board/host fan targets, it's `SET_TEMPERATURE_FAN_TARGET`, not `SET_FAN_SPEED` — but the stock 50 °C / 60 °C targets are sane and you should leave them alone.
+
+### Verify
+
+No SSH needed — ask the printer what its fans are doing:
+
+```bash
+curl -s "http://<printer-ip>:7125/printer/objects/query?fan_generic%20fan0&fan_generic%20fan1&heater_fan%20hotend_fan&temperature_fan%20fan2&temperature_fan%20fan3&extruder" | python3 -m json.tool
+```
+
+On an idle, cold machine you should see `fan0`/`fan1` at `0.0` with `"rpm": null`, `hotend_fan` at `0.0`, and `fan2`/`fan3` both at exactly `0.1` with their live temperatures well under target. Heat the hotend past 45 °C and `hotend_fan` jumps to `1.0` with a real rpm — while both part fans stay at `0.0`. That's the whole confusion, visible in one command.
+
+### Revert
+
+Nothing to revert. This fix is knowledge.
+
+---
+
 ## Bonus: two things worth knowing
 
 **Any Mainsail GUI setting lives in Moonraker's database**, namespace `mainsail` (keys: `console`, `control`, `dashboard`, `gcodeViewer`, `general`, `macros`, `miscellaneous`, `uiSettings`, `view`, …), readable and writable via `/server/database/item`. If you need a schema you don't know, grep the served JS bundle (`/assets/index-*.js`) rather than guessing.
@@ -730,7 +812,7 @@ curl -s http://<printer-ip>:7125/server/files/config/printer.cfg
 
 ## Keywords
 
-Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement
+Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement · SV08 fan not working · SV08 M106 P1 both fans · Klipper M106 P parameter ignored · SV08 which fan is fan0 fan1 · SV08 part cooling fan front rear · SV08 fan runs at 0% · fan spinning but Mainsail shows 0 · SV08 hotend fan always on · heater_fan 45C Klipper · SV08 fan2 fan3 temperature_fan · Klipper fan stuck at 10 percent · min_speed 0.1 temperature_fan · SV08 exhaust fan header · SV08 fan_generic fan3 commented out · PA2 pin conflict SV08 · SET_FAN_SPEED vs M106 Klipper · SV08 fan rpm null · SV08 no fan tachometer · control SV08 fans individually
 
 ## License
 
