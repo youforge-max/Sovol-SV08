@@ -9,12 +9,12 @@ Seven things on a stock **Sovol SV08** that you will hit sooner or later:
 3. **The macro dashboard is full of cryptic buttons** named `G31`, `G34`, `M106`, `M600`.
 4. **A paused print goes cold after 30 minutes and is ruined.** ← this one costs you real prints
 5. **The bed is warped** — on both the original bed and the "v2" revision. ← this one costs you *every* print
-6. **Random `Timer too close` shutdowns mid-print.** Every forum will tell you it's heat or EMI. On my machine it was a **dying eMMC**. ← this one costs you the board
-7. **Power-loss recovery calls `os.fsync()` on every single move.** It kills prints with organic supports or z-hop *now*, and it is very likely what kills the eMMC in #6. ← this one costs you both
+6. **Random `Timer too close` shutdowns mid-print.** Every forum will tell you it's heat or EMI. On my machine it was the **stock 8 GB eMMC** — swapping it fixed what nothing else would. ← this one costs you the board
+7. **Power-loss recovery calls `os.fsync()` on every single move.** It kills prints with organic supports or z-hop *now*, and it is what makes a slow or worn eMMC (#6) fatal. **Do this one first — it's free.** ← this one costs you both
 
 The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) will destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed. **[Fix 5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) is the one that quietly taxes every single print you make**, and it is the only one here whose real answer is "buy a new part".
 
-**[Fix 6](#fix-6--timer-too-close-is-a-dying-emmc-not-a-hot-mainboard) and [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) are the same story told twice.** Sovol's power-loss-recovery patch forces a write to physical flash on every move; that stalls the host until the MCU gives up (`move queue overflow`, `Timer too close`), and it grinds the eMMC to death over months. I chased the `Timer too close` shutdowns through every forum thread I could find — heat, EMI, fans — and none of it worked. Replacing the eMMC did. Fix 7 is why it wore out.
+**[Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) and [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) are the same story told twice.** Sovol's power-loss-recovery patch forces a write to physical flash on every move; that stalls the host until the MCU gives up (`move queue overflow`, `Timer too close`), and it grinds the eMMC to death over months. I chased the `Timer too close` shutdowns through every forum thread I could find — heat, EMI, fans — and none of it worked. Replacing the eMMC did. Fix 7 is why it wore out.
 
 Each fix below covers what causes it, how to fix it, how to verify it, and how to revert — including *why the obvious fix is wrong* in most of them.
 
@@ -31,7 +31,7 @@ Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-ti
 | [3](#fix-3--mainsail-dashboard-is-full-of-g31--g34--m106--m600-buttons) | Dashboard full of raw G-code buttons | Free | Annoyance |
 | [4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) | Paused print cools down and is ruined | Free | **Destroys prints** |
 | [5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) | Warped bed (v1 **and** v2) — no DIY fix works | 💸 New bed | **Degrades every print** |
-| [6](#fix-6--timer-too-close-is-a-dying-emmc-not-a-hot-mainboard) | `Timer too close` shutdowns — it's the eMMC, not heat | 💸 New eMMC | **Destroys prints + the board** |
+| [6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) | `Timer too close` shutdowns — it's the eMMC, not heat | 💸 New eMMC | **Destroys prints + the board** |
 | [7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) | PLR `os.fsync()` per move → `move queue overflow`, dead flash | Free | **Destroys prints + your eMMC** |
 
 ---
@@ -460,7 +460,7 @@ Bolt the old bed back on and re-run `BED_MESH_CALIBRATE` + Z offset. Keep the st
 
 ---
 
-## Fix 6 — "Timer too close" is a dying eMMC, not a hot mainboard
+## Fix 6 — "Timer too close" is the eMMC, not a hot mainboard
 
 ### Symptoms
 
@@ -476,7 +476,9 @@ Bolt the old bed back on and re-run `BED_MESH_CALIBRATE` + Z offset. Keep the st
 
 Search this error and you'll be told it's **heat** (put a fan on the mainboard) or **EMI** on the USB line to the toolhead (re-route your cables). The [Sovol forum's own thread on it](https://forum.sovol3d.com/t/sv08-overcoming-high-temperature-klipper-shutdown-problem-my-solution/7623) ends with someone cutting a hole in their desk and bolting a **160 CFM** fan under the machine — and the thread still argues about whether heat was ever the cause.
 
-**On my machine it was the eMMC module.** I went through the forums and tried everything I could find — none of it worked. I swapped the eMMC for a new one off eBay and the shutdowns stopped. No fan, no cable re-routing, no config change.
+**On my machine it was the eMMC module.** I went through the forums and tried everything I could find — none of it worked. I swapped the stock eMMC for a 32 GB module off eBay and the shutdowns stopped. No fan, no cable re-routing, no config change.
+
+> **What I can and can't tell you.** The stock SV08 ships an **8 GB eMMC**. I replaced it with a 32 GB one, so I *upgraded* as well as replaced — and I no longer have the original to autopsy. **I don't know whether the stock module was worn out or simply cheap and slow.** Both produce this failure, for the same underlying reason (below), and I'm not going to pretend I know which one it was. Sovol themselves now sell a [32 GB eMMC upgrade](https://www.sovol3d.com/products/sv08-max-32gb-emmc), which tells you something about the stock part.
 
 > **Honesty about this one:** I did not capture `dmesg` before I swapped the module, so I can't hand you a smoking-gun log line from my own printer. What follows is the mechanism that fits, plus **the check I wish I'd run first** — so you can confirm it on *your* machine before spending money.
 
@@ -484,7 +486,12 @@ Search this error and you'll be told it's **heat** (put a fan on the mainboard) 
 
 `Timer too close` is the **MCU** complaining that the **host** missed a deadline. Klipper's host process schedules moves ahead of time and streams them to the MCU; if the host stalls long enough, the MCU runs out of runway and shuts down to avoid doing something dangerous.
 
-A worn eMMC stalls the host beautifully. As flash wears out, the controller starts retrying reads and writes internally, and a write that normally takes microseconds can block for **hundreds of milliseconds**. Klippy is blocked in that write, misses its scheduling window, and the MCU shuts down. It's a host-side stall wearing an MCU-side error message — which is exactly why chasing mainboard temperature never fixes it.
+An eMMC stalls the host beautifully, and it doesn't have to be *broken* to do it — only **slow at synchronous writes**:
+
+* **A worn module** starts retrying internally as flash degrades, and a write that normally takes microseconds blocks for **hundreds of milliseconds**.
+* **A cheap, small module is slow even when perfectly healthy.** An 8 GB eMMC has few flash dies, so it has little internal parallelism and poor random-write latency — precisely the workload [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) generates.
+
+Either way klippy blocks inside that write, misses its scheduling window, and the MCU shuts down. It's a host-side stall wearing an MCU-side error message — which is exactly why chasing mainboard temperature never fixes it.
 
 It also explains the two things heat can't:
 
@@ -495,7 +502,7 @@ It also explains the two things heat can't:
 
 See [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) — Sovol's power-loss-recovery patch writes a file to that eMMC **on every single G1 move**. A print is millions of moves. That is millions of small synchronous writes to a cheap eMMC that has no wear-leveling headroom to spare.
 
-So the two failures are probably one story: PLR hammers the flash, the flash wears out, and you get `Timer too close` shutdowns from a board that was fine when you bought it. **If you replace your eMMC, apply Fix 7 too, or you will wear the new one out the same way.**
+That workload — a forced, blocking write per move — is the worst case for a small eMMC. It's what turns a merely *slow* module into a print-killer, and over time it's a plausible way to wear one out. **Fix 7 is free. Do it before you spend money on flash.** If you have already replaced your eMMC, apply Fix 7 anyway, or the new module gets the same treatment.
 
 ### Check yours before you buy anything
 
@@ -528,6 +535,8 @@ How to read it:
 
 `pre_eol_info` is the one that matters. **`0x02` or `0x03` and you have found your problem.**
 
+**But a clean reading does not clear the module.** Wear counters say nothing about *speed*, and a healthy-but-slow 8 GB eMMC will still stall the host under Fix 7's write-per-move. So: **apply Fix 7 first** (free, five minutes). If the shutdowns survive that, the eMMC is the next thing to change, wear counters or not.
+
 Also look for the flash complaining out loud:
 
 ```bash
@@ -538,7 +547,7 @@ Anything here — timeouts, CRC errors, retries — is your smoking gun. A healt
 
 ### Fix
 
-Replace the eMMC module. It's a standard socketed module on the CB1-style SBC — mine came from eBay, and any compatible module of the same capacity (32 GB here) will do. Then reflash the Sovol image (or go [mainline](https://github.com/Rappetor/Sovol-SV08-Mainline)) and restore your config backup.
+Replace the eMMC module. It's a standard socketed module on the CB1-style SBC. The stock part is **8 GB**; I fitted a **32 GB** one from eBay, and Sovol sell a 32 GB module themselves. Bigger is not the point — *faster* is, and on eMMC the two tend to travel together. Then reflash the Sovol image (or go [mainline](https://github.com/Rappetor/Sovol-SV08-Mainline)) and restore your config backup.
 
 Before you refit the cover: **apply [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move)**, so the new module doesn't get chewed up the way the old one did.
 
@@ -567,7 +576,7 @@ Keep the old module. If the new one changes nothing, you've lost the price of an
   > **MCU 'extra_mcu' shutdown: move queue overflow** — or **Timer too close**
 
 * Simple, boxy prints are fine. The more small XYZ moves your model has, the likelier it dies.
-* Over months: the eMMC wears out and the printer starts shutting down at random ([Fix 6](#fix-6--timer-too-close-is-a-dying-emmc-not-a-hot-mainboard)).
+* Over months: the eMMC wears out and the printer starts shutting down at random ([Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard)).
 
 This is [issue #33](https://github.com/Sovol3d/SV08/issues/33) on Sovol's own tracker. It is open, has zero comments, and has never been answered.
 
@@ -597,7 +606,7 @@ Read that again: a **config-file parse**, a **JSON write**, and an **`os.fsync()
 Two consequences, both bad:
 
 1. **It kills prints now.** Exactly the prints Sovol's own issue #33 names: organic supports, spiral z-hop.
-2. **It kills your eMMC slowly.** Millions of forced flash writes per print, on a cheap module with no wear-leveling headroom. See [Fix 6](#fix-6--timer-too-close-is-a-dying-emmc-not-a-hot-mainboard) — this is very likely what wears them out.
+2. **It kills your eMMC slowly.** Millions of forced flash writes per print, on a cheap module with no wear-leveling headroom. See [Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) — this is very likely what wears them out.
 
 The bitter part: **the recovery it's paying all this for doesn't work.** The write *is* the failure mode.
 
