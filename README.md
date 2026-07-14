@@ -23,6 +23,8 @@ Each fix below covers what causes it, how to fix it, how to verify it, and how t
 
 Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Fixes 1–4 and 7–10 are software and cost nothing. **Fixes 5 and 6 are hardware and cost money** — be slow to accept those two, and do the free ones first: [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) in particular may be the whole of your [Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) problem.
 
+**Own an [SV08 Max](#does-any-of-this-apply-to-the-sovol-sv08-max) instead?** Sovol quietly fixed 4, 9 and 10 on it — and shipped Fix 7 forward with the guard *loosened*. Read that section before you apply anything here.
+
 Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-timelapse` install, the macro-button problem hits any Klipper printer whose vendor named macros after raw G-code, and the paused-print cool-down hits any Klipper machine with a stock `idle_timeout`. The warped bed is the SV08-specific one.
 
 > **Back up before you touch anything.** `cp file file.bak.$(date +%Y%m%d)`. Every fix below tells you how to revert it.
@@ -499,10 +501,32 @@ An eMMC stalls the host beautifully, and it doesn't have to be *broken* to do it
 
 Either way klippy blocks inside that write, misses its scheduling window, and the MCU shuts down. It's a host-side stall wearing an MCU-side error message — which is exactly why chasing mainboard temperature never fixes it.
 
-It also explains the two things heat can't:
+It also explains something heat doesn't:
 
-* **Why it hits late in long prints.** More writes, more accumulated retries.
-* **Why a fan sometimes "fixes" it.** It doesn't. Pulling the machine apart to mount a fan means reseating the eMMC — and a reseated (or replaced) module is the actual change.
+* **Why it hits late in long prints.** More writes, more accumulated retries. (Though heat has the same shape — see below.)
+
+And it explains a confounder worth knowing about: **pulling the machine apart to mount a fan means reseating the eMMC.** If a fan "fixed" it for you, you changed two things at once.
+
+### Where the title of this section overstates it
+
+The heading says "not a hot mainboard". That was true on **my** machine, and I'll stand behind the mechanism above — but I have since measured something that makes the flat dismissal of heat wrong, and I'd rather correct it than defend it.
+
+`Timer too close` is a *host missed its deadline* error. **Anything** that stalls the host produces it. There are at least three plausible causes on this platform, and they are not mutually exclusive:
+
+| Cause | Evidence | Cost to check |
+|---|---|---|
+| **eMMC stall** (slow or worn synchronous writes) | This section. Fixed it on my printer. | **Free** — [sysfs check](#check-yours-before-you-buy-anything), then [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) |
+| **Heat** | Real, and I under-rated it. See below. | Free to *measure* |
+| **EMI on the toolhead USB line** (PSU switching noise) | The second theory in the [Sovol forum thread](https://forum.sovol3d.com/t/sv08-overcoming-high-temperature-klipper-shutdown-problem-my-solution/7623). Untested by me. | Free — re-route cables |
+
+On the heat half: while measuring [Fix 9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) I ran a real print with the bottom-plate fan removed — which is **how a stock SV08 leaves the factory**, because the PA1 header ships with nothing plugged into it. The host CPU reached **71.2 °C** and the mainboard MCU **64.1 °C and still climbing**. The forum thread that bolted a 160 CFM fan under the machine reports host **60 → 40 °C** and MCU **50 → 29 °C** — the same size of effect, in the same direction. That is not a temperature you can wave away.
+
+So the honest ordering is: **check the eMMC first, because it's free** ([sysfs](#check-yours-before-you-buy-anything), then Fix 7). If the module is healthy and Fix 7 didn't help, **then** cool the board — and know that a stock machine has no board cooling at all.
+
+What I still believe, and what I'd retract:
+
+* **Retract:** "a fan never fixes it, reseating the eMMC is the real change." Sometimes the fan *is* the fix. I had a bad module and generalised from it.
+* **Stand by:** replacing the eMMC without doing Fix 7 first is spending money to buy yourself the same problem again, more slowly.
 
 ### The part that makes this Sovol's fault
 
@@ -630,6 +654,22 @@ Two consequences, both bad:
 2. **It kills your eMMC slowly.** Millions of forced flash writes per print, on a cheap module with no wear-leveling headroom. See [Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) — this is very likely what wears them out.
 
 The bitter part: **the recovery it's paying all this for doesn't work.** The write *is* the failure mode.
+
+### The SV08 Max ships the same patch — with a *looser* guard
+
+Sovol published the Max's source too, and `cmd_G1` still calls `os.fsync()`. What changed is the condition in front of it:
+
+```python
+# Sovol3d/SV08 ....... klippy/extras/gcode_move.py
+if 'G' in params and 'Z' in params and 'X' in params and 'Y' in params and 'F' in params:
+
+# Sovol3d/SV08MAX .... klippy/extras/gcode_move.py     <- 'F' guard GONE
+if 'G' in params and 'X' in params and 'Y' in params and 'Z' in params:
+```
+
+They **removed** a condition. Fewer moves are filtered out, so a strictly larger set of G1s now triggers the blocking write. (The firmware actually shipping on my SV08 is already the second form — which means the public `Sovol3d/SV08` repo is *stale*, and the guard on real hardware is the loose one.)
+
+This is a two-year-old bug, carried forward into a new flagship, on a bigger machine that moves further per layer. Apply this fix on a Max too.
 
 ### Fix
 
@@ -1239,6 +1279,42 @@ Ask what the *cost of being wrong* is in each direction. A missed runout for 1.2
 
 ---
 
+## Does any of this apply to the Sovol SV08 Max?
+
+Some of it. Sovol quietly fixed three of these on the Max — and carried the worst one forward.
+
+**I do not own an SV08 Max.** Everything below is read out of [Sovol's own published source](https://github.com/Sovol3d/SV08MAX) — the stock `printer.cfg`, `plr.cfg`, `buffer_stepper.cfg`, `Macro.cfg`, `moonraker.conf`, and their patched `klippy/extras/gcode_move.py` — diffed against the SV08. It is a config-level read, not a hands-on one. Treat it as a map, not a measurement.
+
+| # | On the SV08 Max |
+|---|---|
+| 4 — paused print goes cold | ✅ **Fixed.** The Max's `_IDLE_TIMEOUT` checks `printer.print_stats.state == "paused"` and skips `TURN_OFF_HEATERS`. The SV08's doesn't. |
+| 9 — exhaust fan PID'd against the CPU | ✅ **Fixed.** The Max has **no `temperature_fan` at all**. The exhaust is a plain `[fan_generic fan3]` on `PE11`. The SV08's worst bug simply does not exist there. |
+| 10 — filament sensor pauses on one read | ✅ **Fixed** — and Sovol landed on the same shape I did. The Max ships `pause_on_runout: False` with a custom `runout_gcode`. That makes the SV08's `pause_on_runout: True` the outlier, not the norm. (The Max's handler isn't a debounce — it calls `CONTINUE_PRINT_D` and keeps printing off the buffer — but the *architecture* is the same: don't let Klipper's built-in pause fire on a single read.) |
+| 7 — PLR `os.fsync()` per move | ❌ **Still there — with the guard loosened.** See [Fix 7](#the-sv08-max-ships-the-same-patch--with-a-looser-guard). This is the one to carry across. |
+| 8 — `M106 P` and the undocumented fans | ⚠️ **Still undocumented, and the map is different.** Max: `fan0` = front part fan (`extra_mcu:PB0`), `fan1` = rear part fan (`extra_mcu:PA7`), `fan2` = auxiliary (`PB0`), `fan3` = exhaust (`PE11`), plus `heater_fan hotend_fan` and a `heater_fan bed_fan` on `PE14`. **Do not reuse my P-numbers on a Max** — re-derive them from your own `printer.cfg`. |
+| 5 — warped bed | ⚠️ Max owners report the same taco. Plus a Max-specific one I have no fix for: the bed **overshooting into an emergency shutdown**, climbing past target at 0% heater power. |
+| 6 — `Timer too close` | ⚠️ Same platform, same eMMC, same PLR patch. Same three causes. Run the [free sysfs check](#check-yours-before-you-buy-anything). |
+| 1, 2, 3 | Same Klipper/Moonraker/Mainsail stack. I did not verify these against the Max image. |
+
+### No board cooling on the Max either
+
+The Max's `printer.cfg` has **no mainboard fan** — no `output_pin`, no `heater_fan`, nothing pointed at the electronics. Same as a stock SV08, where the `PA1` header ships empty. A bigger machine with a bigger PSU and the same amount of board cooling: none. If you enclose it, [Fix 9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) is worth reading even though the PID bug it describes is gone.
+
+### The Max answers the chamber-sensor question
+
+The Max ships a `chamber_hot.cfg` (commented out by default): a **separate CAN toolboard** (`[mcu hot_mcu]`), two ordinary 100 K thermistors, a `[heater_generic chamber_temp]` capped at 65 °C on watermark control, and `M141`/`M191` macros.
+
+Two things worth taking from that if you're retrofitting a chamber sensor to an SV08:
+
+1. Sovol's own answer to "the CB1 has no spare GPIO" was **to add another MCU**, not to route sensors through the Linux host. That's also what the community does (a €5 Bluepill + I²C sensor).
+2. They did **not** PID the exhaust against chamber temperature — the chamber heater is a separate `watermark` loop. Which is the right call: the target chamber temperature is filament-dependent (ABS wants it hot and the exhaust *off*; PLA and PETG want the opposite), so no single PID target serves both.
+
+### The security holes are identical
+
+The Max's `moonraker.conf` still binds `host: 0.0.0.0`, still lists all of RFC1918 under `trusted_clients`, and still has no `force_logins`. **Anyone on your LAN can move the gantry and start a print, with no credentials.** And [Sovol3d/SV08 issue #26](https://github.com/Sovol3d/SV08/issues/26) — *"SSH host keys not generated on first boot"*, meaning every unit on earth shares one host key and can be MITM'd — is still open, with zero comments, on both machines.
+
+---
+
 ## Bonus: two things worth knowing
 
 **Any Mainsail GUI setting lives in Moonraker's database**, namespace `mainsail` (keys: `console`, `control`, `dashboard`, `gcodeViewer`, `general`, `macros`, `miscellaneous`, `uiSettings`, `view`, …), readable and writable via `/server/database/item`. If you need a schema you don't know, grep the served JS bundle (`/assets/index-*.js`) rather than guessing.
@@ -1275,7 +1351,7 @@ curl -s http://<printer-ip>:7125/server/files/config/printer.cfg
 
 ## Keywords
 
-Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement · SV08 fan not working · SV08 M106 P1 both fans · Klipper M106 P parameter ignored · SV08 which fan is fan0 fan1 · SV08 part cooling fan front rear · SV08 fan runs at 0% · fan spinning but Mainsail shows 0 · SV08 hotend fan always on · heater_fan 45C Klipper · SV08 fan2 fan3 temperature_fan · Klipper fan stuck at 10 percent · min_speed 0.1 temperature_fan · SV08 exhaust fan header · SV08 fan_generic fan3 commented out · PA2 pin conflict SV08 · SET_FAN_SPEED vs M106 Klipper · SV08 fan rpm null · SV08 no fan tachometer · control SV08 fans individually · SV08 fan always at 100% · SV08 exhaust fan runs constantly · SV08 fan never turns off · SV08 loud fan idle · temperature_fan stuck at 100 percent · Klipper temperature_fan never reaches target · target_temp below idle temperature · SV08 temperature_host 65C · CB1 host temp high SV08 · SV08 host fan does not exist · SV08 PA2 exhaust fan · SV08 enclosure will not heat up · SV08 chamber temperature too low · SV08 ABS warping enclosure · enclosure never gets warm 3D printer · exhaust fan venting heated chamber · SV08 ASA printing enclosure · Klipper PID fan no authority · SV08 mainboard fan cools CB1 · SV08 fan2 target_temp 50 · SET_TEMPERATURE_FAN_TARGET 0 disables fan · Klipper temperature_fan target 0 turns fan off · SV08 M106 P3 exhaust fan working · SV08 chamber exhaust fan control · Klipper fan_generic off after reboot · Klipper fan_generic sticky between prints · Klipper fan resets to 0 on FIRMWARE_RESTART · OrcaSlicer air filtration SV08 · OrcaSlicer exhaust fan not working · support_air_filtration Orca · activate_air_filtration_during_print · OrcaSlicer ABS air filtration 70% default wrong · OrcaSlicer issue 9002 · PLA gcode has no M106 P3 · SV08 START_PRINT vs PRINT_START · plr.cfg PRINT_START never called · Klipper output_pin always on fan · Klipper shutdown_value fan · hide fan from Mainsail leading underscore · Klipper section name spaces not allowed · SV08 mainboard fan always 100% · SV08 temperature_sensor mcu_temp commented out · SV08 MCU temperature missing from Mainsail · SV08 exhaust throttles when host is cool · Klipper temperature_fan target at idle temp never spins up · SV08 pauses randomly mid print · SV08 false filament runout · Klipper filament sensor false trigger · filament_switch_sensor bounce · SV08 pauses with filament loaded · Pause Print! no reason Klipper · Klipper pause_on_runout no debounce · filament runout debounce Klipper · SV08 switch_pin PE9 · Klipper runout_gcode delayed_gcode · Klipper macro template rendered before execution · Klipper G4 dwell if statement stale · UPDATE_DELAYED_GCODE debounce · Klipper gcode_macro empty gcode variable holder · SV08 filament sensor chatter · pause_delay vs event_delay Klipper · SV08 host CPU over 70C during print · SV08 mainboard fan PA1 empty stock
+Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement · SV08 fan not working · SV08 M106 P1 both fans · Klipper M106 P parameter ignored · SV08 which fan is fan0 fan1 · SV08 part cooling fan front rear · SV08 fan runs at 0% · fan spinning but Mainsail shows 0 · SV08 hotend fan always on · heater_fan 45C Klipper · SV08 fan2 fan3 temperature_fan · Klipper fan stuck at 10 percent · min_speed 0.1 temperature_fan · SV08 exhaust fan header · SV08 fan_generic fan3 commented out · PA2 pin conflict SV08 · SET_FAN_SPEED vs M106 Klipper · SV08 fan rpm null · SV08 no fan tachometer · control SV08 fans individually · SV08 fan always at 100% · SV08 exhaust fan runs constantly · SV08 fan never turns off · SV08 loud fan idle · temperature_fan stuck at 100 percent · Klipper temperature_fan never reaches target · target_temp below idle temperature · SV08 temperature_host 65C · CB1 host temp high SV08 · SV08 host fan does not exist · SV08 PA2 exhaust fan · SV08 enclosure will not heat up · SV08 chamber temperature too low · SV08 ABS warping enclosure · enclosure never gets warm 3D printer · exhaust fan venting heated chamber · SV08 ASA printing enclosure · Klipper PID fan no authority · SV08 mainboard fan cools CB1 · SV08 fan2 target_temp 50 · SET_TEMPERATURE_FAN_TARGET 0 disables fan · Klipper temperature_fan target 0 turns fan off · SV08 M106 P3 exhaust fan working · SV08 chamber exhaust fan control · Klipper fan_generic off after reboot · Klipper fan_generic sticky between prints · Klipper fan resets to 0 on FIRMWARE_RESTART · OrcaSlicer air filtration SV08 · OrcaSlicer exhaust fan not working · support_air_filtration Orca · activate_air_filtration_during_print · OrcaSlicer ABS air filtration 70% default wrong · OrcaSlicer issue 9002 · PLA gcode has no M106 P3 · SV08 START_PRINT vs PRINT_START · plr.cfg PRINT_START never called · Klipper output_pin always on fan · Klipper shutdown_value fan · hide fan from Mainsail leading underscore · Klipper section name spaces not allowed · SV08 mainboard fan always 100% · SV08 temperature_sensor mcu_temp commented out · SV08 MCU temperature missing from Mainsail · SV08 exhaust throttles when host is cool · Klipper temperature_fan target at idle temp never spins up · SV08 pauses randomly mid print · SV08 false filament runout · Klipper filament sensor false trigger · filament_switch_sensor bounce · SV08 pauses with filament loaded · Pause Print! no reason Klipper · Klipper pause_on_runout no debounce · filament runout debounce Klipper · SV08 switch_pin PE9 · Klipper runout_gcode delayed_gcode · Klipper macro template rendered before execution · Klipper G4 dwell if statement stale · UPDATE_DELAYED_GCODE debounce · Klipper gcode_macro empty gcode variable holder · SV08 filament sensor chatter · pause_delay vs event_delay Klipper · SV08 host CPU over 70C during print · SV08 mainboard fan PA1 empty · Sovol SV08 Max fixes · does SV08 fix apply to SV08 Max · SV08 Max PLR fsync · SV08 Max os.fsync every move · SV08MAX gcode_move.py · SV08 Max power loss recovery bug · SV08 Max move queue overflow · SV08 Max Timer too close · SV08 Max fan map fan0 fan1 fan2 fan3 · SV08 Max exhaust fan PE11 · SV08 Max no temperature_fan · SV08 Max mainboard fan missing · SV08 Max board cooling · SV08 Max paused print heaters · SV08 Max idle_timeout paused · SV08 Max pause_on_runout False · SV08 Max filament sensor buffer_mcu · SV08 Max chamber heater chamber_hot.cfg · SV08 Max M141 M191 chamber · SV08 Max hot_mcu canbus · SV08 chamber temperature sensor retrofit · SV08 Max bed overtemp emergency shutdown · SV08 Max warped bed · Moonraker no authentication SV08 · force_logins Moonraker · Moonraker trusted_clients 0.0.0.0 · SV08 SSH host key not regenerated · Sovol SV08 issue 26 · SV08 MITM ssh host key · SV08 Timer too close heat vs eMMC vs EMI stock
 
 ## License
 
