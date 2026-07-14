@@ -848,11 +848,27 @@ One loop has a controller and no fan. The other has a fan that cannot reach its 
 
 **If you fit one of those, it lands on `PA1` — and Klipper already has a working PID waiting for it.** It starts cooling the moment you plug it in, no config change needed. That is the one thing Sovol got right here, entirely by accident.
 
+#### Fit it blowing *in*, not out
+
+None of those mod listings say which way round the fan goes, and it is easy to get wrong — because **the wrong way still works.** That is what makes it worth a paragraph.
+
+The bay already has an extractor: the exhaust on `PA2`. Mount your new fan blowing **outward** and you now have **two extractors and no intake.** The electronics bay goes to negative pressure and draws its replacement air through whatever gaps, seams and cable pass-throughs leak best. Air does cross the board — but along whatever path happens to leak, not over the hot parts. It cools. It cools *badly*, and it gives you no hint that anything is wrong.
+
+Mount it blowing **inward, onto the board**, and the two fans stop fighting: the bottom fan pushes fresh air in, the `PA2` exhaust pulls it out, and the flow runs one way across the board. Same two fans, same power, air actually where it's needed.
+
+The fan frame carries two moulded arrows — one for rotation, one for airflow. **Point the airflow arrow at the mainboard.**
+
+> **If yours is in backwards, unscrew it and physically rotate it 180°.** Do *not* try to fix it by swapping the two wires: reversing polarity on a brushless DC fan does not reverse its direction, it simply stops it from starting, and leaving a stalled coil energised can destroy the fan's driver. There is no wiring trick. Flip the hardware.
+
+*(Measured on this machine, backwards: the fan still pulled the MCU down about 5 K. That 5 K is what the leak paths were worth. Getting it the right way round should beat it comfortably — that is the whole point of the warning. It is the third thing on this board that works just well enough to hide the fact that it's wrong.)*
+
 ### The measurement
 
 Steppers disabled, heaters off, 20 minutes, sampling every 20 s. `fan3` is the exhaust on PA2.
 
 > **Read this before you try to reproduce it.** The machine under test has a **bottom-plate mainboard fan fitted on `PA1`** — the community mod above. A stock SV08 has nothing on that header, so phase B is not reproducible on an unmodified printer: with no board fan, `temperature_host` never comes down, and your exhaust just stays pinned at 100% the entire time. **The mod does not cause the bug — it partially masks it.** See the note under the results.
+>
+> **Two caveats on the magnitudes below, in the interest of not overselling them.** First, that bottom-plate fan turned out to be **mounted backwards** (blowing out — see the warning above), so these deltas are what a *misfitted* board fan buys; a correctly-oriented one should do better. Second, `fan3`'s PID was **left live** during the run, so it was free to absorb some of the change into its own duty instead of into temperature. The **direction** of every result below is solid and the phase-C conclusion does not depend on the numbers at all — but treat the exact kelvin figures as indicative, not precise. A cleaner rerun (exhaust pinned, longer phases) is pending.
 
 | Phase | fan2 | fan3 | MCU Δ | host Δ |
 |---|---|---|---|---|
