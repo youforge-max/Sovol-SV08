@@ -2,7 +2,7 @@
 
 > Fixes you need after buying a Sovol SV08: warped bed (v1 & v2 — no DIY fix works), paused prints going cold and ruining the job, timelapse autorender resetting every boot, the Moonraker "too old" nag, and cryptic G-code macro buttons.
 
-Eight things on a stock **Sovol SV08** that you will hit sooner or later:
+Nine things on a stock **Sovol SV08** that you will hit sooner or later:
 
 1. **Timelapse auto-render turns itself off after every reboot.**
 2. **Mainsail nags that Moonraker is too old** — and the updater is disabled.
@@ -12,6 +12,7 @@ Eight things on a stock **Sovol SV08** that you will hit sooner or later:
 6. **Random `Timer too close` shutdowns mid-print.** Every forum will tell you it's heat or EMI. On my machine it was the **stock 8 GB eMMC** — swapping it fixed what nothing else would. ← this one costs you the board
 7. **Power-loss recovery calls `os.fsync()` on every single move.** It kills prints with organic supports or z-hop *now*, and it is what makes a slow or worn eMMC (#6) fatal. **Do this one first — it's free.** ← this one costs you both
 8. **`M106 P1` doesn't address one fan — it sets both.** The `P` parameter is decorative, one branch of the macro is dead code, and the five fans on the machine are documented nowhere. ← this one costs you an afternoon
+9. **Your exhaust fan is PID-controlled by a CPU temperature it cannot possibly affect** — so it runs at **100%, permanently, forever**. If you have an enclosure, it is venting your chamber around the clock and you will never hold a temperature in it. ← this one costs you every ABS print
 
 The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) will destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed. **[Fix 5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) is the one that quietly taxes every single print you make**, and it is the only one here whose real answer is "buy a new part".
 
@@ -19,7 +20,7 @@ The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after
 
 Each fix below covers what causes it, how to fix it, how to verify it, and how to revert — including *why the obvious fix is wrong* in most of them.
 
-Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Fixes 1–4, 7 and 8 are software and cost nothing. **Fixes 5 and 6 are hardware and cost money** — be slow to accept those two, and do the free ones first: [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) in particular may be the whole of your [Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) problem.
+Tested on an SV08 running the factory Sovol image (Klipper + Moonraker + Mainsail, Moonraker `v0.8.0-209-g4235789-dirty`). Fixes 1–4 and 7–9 are software and cost nothing. **Fixes 5 and 6 are hardware and cost money** — be slow to accept those two, and do the free ones first: [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) in particular may be the whole of your [Fix 6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) problem.
 
 Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-timelapse` install, the macro-button problem hits any Klipper printer whose vendor named macros after raw G-code, and the paused-print cool-down hits any Klipper machine with a stock `idle_timeout`. The warped bed is the SV08-specific one.
 
@@ -35,6 +36,7 @@ Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-ti
 | [6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) | `Timer too close` shutdowns — it's the eMMC, not heat | 💸 New eMMC | **Destroys prints + the board** |
 | [7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) | PLR `os.fsync()` per move → `move queue overflow`, dead flash | Free | **Destroys prints + your eMMC** |
 | [8](#fix-8--m106-p1-does-not-do-what-you-think-and-nobody-documents-the-fans) | `M106 P` is decorative — both part fans always move together | Free | Undocumented |
+| [9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) | Exhaust fan PID'd to `temperature_host` → stuck at 100% forever | Free | **Wrecks enclosed printing** |
 
 ---
 
@@ -714,7 +716,7 @@ Read straight off a stock machine. Only the first two are yours to control:
 | `fan1` | `fan_generic` | `extra_mcu:PB1` | part cooling, **front** | no | only together with `fan0` |
 | `hotend_fan` | `heater_fan` | `extra_mcu:PA6` | heatbreak fan — thermostatic, kicks in at extruder ≥ 45 °C | **yes** | **no** |
 | `fan2` | `temperature_fan` | `PA1` (main MCU) | **mainboard fan** — PID to 50 °C on `temperature_mcu` | no | **no** |
-| `fan3` | `temperature_fan` | `PA2` (main MCU) | **host/CPU fan** — PID to 60 °C on `temperature_host` | no | **no** |
+| `fan3` | `temperature_fan` | `PA2` (main MCU) | **the exhaust fan header** — but Sovol PIDs it to 60 °C on `temperature_host`. There is no host fan on this machine. See **[Fix 9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at)** | no | **no** |
 
 Three things fall out of that table immediately:
 
@@ -758,7 +760,9 @@ SET_FAN_SPEED FAN=fan1 SPEED=1.0     ; front fan only
 
 Put those in your slicer's custom gcode if you want asymmetric cooling. `M106` will always hit both.
 
-**Don't try to control `fan2`, `fan3` or `hotend_fan`.** They're closed-loop on temperature and they're right. If you genuinely need to move the board/host fan targets, it's `SET_TEMPERATURE_FAN_TARGET`, not `SET_FAN_SPEED` — but the stock 50 °C / 60 °C targets are sane and you should leave them alone.
+**`fan2` and `hotend_fan` are closed-loop on temperature and they're right — leave them alone.** If you need to move a `temperature_fan` target it's `SET_TEMPERATURE_FAN_TARGET`, not `SET_FAN_SPEED`.
+
+> **`fan3` is the exception, and it is not fine.** I originally wrote here that the stock 50 °C / 60 °C targets were sane and should be left alone. **That was wrong about `fan3`, and [Fix 9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) is the correction.** `fan3`'s 60 °C target is *below the temperature its sensor idles at*, and the fan on that pin is the exhaust — it cannot cool the CPU it is chained to. The loop never closes and the fan never stops.
 
 ### Verify
 
@@ -773,6 +777,117 @@ On an idle, cold machine you should see `fan0`/`fan1` at `0.0` with `"rpm": null
 ### Revert
 
 Nothing to revert. This fix is knowledge.
+
+---
+
+## Fix 9 — Your exhaust fan is PID-controlled by a CPU it isn't pointed at
+
+### Symptoms
+
+A fan in the bottom of the printer runs at **full speed, all the time**. From boot. On an idle machine with cold heaters and disabled steppers. It never spins down, and it has never spun down — not once, in the life of the printer.
+
+If you have an **enclosure**, the more expensive symptom: the chamber never gets warm. You print ABS or ASA, the enclosure is supposed to hold 40–50 °C, and it just… doesn't. Corners lift anyway. You add insulation, you seal the gaps, you check for drafts. It stays cold, because a fan is pulling the heat out of it around the clock and no one told you.
+
+### Cause
+
+Stock `printer.cfg`:
+
+```ini
+[temperature_fan fan3]       # "header 2 from the left"
+pin: PA2
+sensor_type: temperature_host
+target_temp: 60
+min_speed: 0.1
+max_speed: 1.0
+control: pid
+```
+
+Two facts that don't survive contact with each other:
+
+1. **`PA2` is the exhaust fan header.** Sovol's own commented-out block says so, three hundred lines further down the same file — `#[fan_generic fan3] # exhaust fan` / `#pin: PA2`. The community configs agree ([vvuk/sv08-config](https://github.com/vvuk/sv08-config/blob/main/hw-fans-temps.cfg) declares `[fan_generic exhaust_fan]` on PA2). **There is no host/CB1 fan on this machine.** Nothing blows on the SoC. The bay has two headers: PA1 for the board fan, PA2 for an exhaust.
+
+2. **`temperature_host` idles at 63–67 °C**, and the target is **60 °C**.
+
+So the target sits *below where the sensor lives*. The PID error is positive forever, and the controller does the only thing it can: **peg the fan at 100% and hold it there permanently.** It is trying to cool the CPU by blowing air out the back of the printer. It will try until the fan dies.
+
+This is a closed loop with **no authority**: the actuator cannot move the sensor, by any physical mechanism. Not a tuning problem. There is no value of `pid_Kp` that fixes a fan pointed at the wrong thing.
+
+### The measurement
+
+Steppers disabled, heaters off, 20 minutes, sampling every 20 s. `fan2` is the board fan on PA1; `fan3` is the exhaust on PA2.
+
+| Phase | fan2 | fan3 | MCU Δ | host Δ |
+|---|---|---|---|---|
+| **A** — both stock | idle (0.10 floor) | **1.00** | **+0.59 K** | **+2.92 K** — board *warming* |
+| **B** — force fan2 to full | **1.00** | stock | **−7.01 K** | **−6.00 K** |
+| **C** — starve fan3 to its floor | held 1.00 | **0.10** | −0.75 K | **−2.02 K** — *still falling* |
+
+Read those bottom two rows again.
+
+**Phase B: the board fan cooled the host by 6 K.** The fan that Sovol assigned to the MCU, idling at 10% duty and barely awake, is what actually cools the CPU — because it's the only fan moving air over the electronics at all.
+
+**Phase C: cut the exhaust fan to its floor and the host *keeps getting colder*.** Remove the fan supposedly responsible for a temperature, and that temperature is unaffected. That's the whole proof. It was never cooling anything in there.
+
+And the moment that makes it undeniable — in phase B, as the *board* fan dragged the host down through 60 °C, watch the exhaust fan's own PID finally back off:
+
+```
+t=423s   host 60.97 °C    fan3 duty 0.98
+t=443s   host 60.00 °C    fan3 duty 0.78
+t=463s   host 59.84 °C    fan3 duty 0.45
+t=483s   host 59.35 °C    fan3 duty 0.10   <-- target reached, for the first time ever
+```
+
+**The exhaust fan hit its setpoint exactly once — when a different fan did the work for it.**
+
+### Fix
+
+Give the exhaust back to yourself. In `printer.cfg`, delete the `[temperature_fan fan3]` block and uncomment Sovol's own:
+
+```ini
+[fan_generic fan3]           # exhaust fan - was a temperature_fan PID'd to
+pin: PA2                     # temperature_host, a CPU it cannot cool.
+max_power: 1.0               # Unreachable 60 C target => pinned at 100% forever.
+```
+
+That also un-breaks the dead `M106 P3` branch described in [Fix 8](#fix-8--m106-p1-does-not-do-what-you-think-and-nobody-documents-the-fans) — `SET_FAN_SPEED` refuses a `temperature_fan`, but a `fan_generic` is exactly what it wants. `M106 P3 S255` starts working the day you make this change.
+
+Now the exhaust is **off by default** and you drive it deliberately:
+
+```gcode
+SET_FAN_SPEED FAN=fan3 SPEED=0      ; ABS/ASA - let the chamber hold its heat
+SET_FAN_SPEED FAN=fan3 SPEED=1.0    ; PLA/PETG, or an end-of-print fume purge
+```
+
+Put it in your slicer's per-filament start/end gcode and the chamber finally behaves.
+
+**Consider dropping `fan2`'s target while you're in there.** Its `target_temp: 50` sits right at the MCU's idle temperature (~49.6 °C), so the one fan that actually works loafs at its 10% floor and never spins up. `target_temp: 45` makes it run — and since it's the only thing cooling the electronics bay, that's the fan you *want* awake:
+
+```ini
+[temperature_fan fan2]
+target_temp: 45              # was 50 - MCU idles at ~49.6, so the fan never woke up
+```
+
+Measured at full: MCU 42.7 °C, host 57.7 °C. Both comfortable, and the host is *better off than stock* — cooled by the board fan, which was doing it all along.
+
+### Verify
+
+```bash
+curl -s "http://<printer-ip>:7125/printer/objects/query?fan_generic%20fan3&temperature_fan%20fan2" | python3 -m json.tool
+```
+
+`fan3` should now report `"speed": 0.0` on an idle machine — **not** the `1.0` it has shown every second since you unboxed it. Send `SET_FAN_SPEED FAN=fan3 SPEED=1` and hear the exhaust come up; send `SPEED=0` and hear it stop, probably for the first time.
+
+Then heat your chamber and watch it actually climb.
+
+### Revert
+
+Restore the `[temperature_fan fan3]` block and re-comment `[fan_generic fan3]`. `FIRMWARE_RESTART`. The fan goes back to 100% forever.
+
+### The general trap
+
+**A `temperature_fan` whose target is below its sensor's idle temperature is not a fan — it's a fan permanently switched on, wearing out, with a PID bolted to the front of it for decoration.** Klipper will not warn you. Mainsail will cheerfully render it as 100% and you'll assume that's the machine working hard.
+
+Before you trust *any* closed loop, ask the boring question: **can this actuator actually move this sensor?** If the answer is no, the loop is a lie, and no amount of tuning will make it true.
 
 ---
 
@@ -812,7 +927,7 @@ curl -s http://<printer-ip>:7125/server/files/config/printer.cfg
 
 ## Keywords
 
-Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement · SV08 fan not working · SV08 M106 P1 both fans · Klipper M106 P parameter ignored · SV08 which fan is fan0 fan1 · SV08 part cooling fan front rear · SV08 fan runs at 0% · fan spinning but Mainsail shows 0 · SV08 hotend fan always on · heater_fan 45C Klipper · SV08 fan2 fan3 temperature_fan · Klipper fan stuck at 10 percent · min_speed 0.1 temperature_fan · SV08 exhaust fan header · SV08 fan_generic fan3 commented out · PA2 pin conflict SV08 · SET_FAN_SPEED vs M106 Klipper · SV08 fan rpm null · SV08 no fan tachometer · control SV08 fans individually
+Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement · SV08 fan not working · SV08 M106 P1 both fans · Klipper M106 P parameter ignored · SV08 which fan is fan0 fan1 · SV08 part cooling fan front rear · SV08 fan runs at 0% · fan spinning but Mainsail shows 0 · SV08 hotend fan always on · heater_fan 45C Klipper · SV08 fan2 fan3 temperature_fan · Klipper fan stuck at 10 percent · min_speed 0.1 temperature_fan · SV08 exhaust fan header · SV08 fan_generic fan3 commented out · PA2 pin conflict SV08 · SET_FAN_SPEED vs M106 Klipper · SV08 fan rpm null · SV08 no fan tachometer · control SV08 fans individually · SV08 fan always at 100% · SV08 exhaust fan runs constantly · SV08 fan never turns off · SV08 loud fan idle · temperature_fan stuck at 100 percent · Klipper temperature_fan never reaches target · target_temp below idle temperature · SV08 temperature_host 65C · CB1 host temp high SV08 · SV08 host fan does not exist · SV08 PA2 exhaust fan · SV08 enclosure will not heat up · SV08 chamber temperature too low · SV08 ABS warping enclosure · enclosure never gets warm 3D printer · exhaust fan venting heated chamber · SV08 ASA printing enclosure · Klipper PID fan no authority · SV08 mainboard fan cools CB1 · SV08 fan2 target_temp 50 · SET_TEMPERATURE_FAN_TARGET 0 disables fan · Klipper temperature_fan target 0 turns fan off · SV08 M106 P3 exhaust fan working
 
 ## License
 
