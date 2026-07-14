@@ -551,6 +551,21 @@ Replace the eMMC module. It's a standard socketed module on the CB1-style SBC. T
 
 Before you refit the cover: **apply [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move)**, so the new module doesn't get chewed up the way the old one did.
 
+### The bigger module is worth it anyway — and it's not just space
+
+The stock 8 GB is cramped the moment you actually use the printer. Mine, on the 32 GB module:
+
+```bash
+df -h /                                                    # 29G total, 11G used, 18G free
+du -sh ~/printer_data/gcodes ~/printer_data/timelapse      # 5.1G gcodes, 1.6G timelapse
+```
+
+**6.7 GB of gcode and timelapses** — on an 8 GB module that is not merely tight, it is impossible once the OS has taken its cut. You end up deleting prints to make room for prints, and timelapse ([Fix 1](#fix-1--timelapse-auto-render-resets-to-off-after-every-reboot)) is the first thing you give up.
+
+And there's a nastier feedback loop: **a nearly-full eMMC is a slower eMMC.** Less free space means less spare area for the controller to work with, more write amplification, and worse write latency — the exact quantity that decides whether [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move)'s forced write-per-move stalls the host hard enough to shut the MCU down. A full 8 GB module is the worst possible case for this bug: small, slow, *and* out of room.
+
+So a bigger module buys you three things at once — space for your files, headroom that keeps the flash fast, and more flash to spread the wear across.
+
 ### Verify
 
 ```bash
