@@ -12,7 +12,7 @@ Nine things on a stock **Sovol SV08** that you will hit sooner or later:
 6. **Random `Timer too close` shutdowns mid-print.** Every forum will tell you it's heat or EMI. On my machine it was the **stock 8 GB eMMC** — swapping it fixed what nothing else would. ← this one costs you the board
 7. **Power-loss recovery calls `os.fsync()` on every single move.** It kills prints with organic supports or z-hop *now*, and it is what makes a slow or worn eMMC (#6) fatal. **Do this one first — it's free.** ← this one costs you both
 8. **`M106 P1` doesn't address one fan — it sets both.** The `P` parameter is decorative, one branch of the macro is dead code, and the five fans on the machine are documented nowhere. ← this one costs you an afternoon
-9. **Your exhaust fan is PID-controlled by a CPU temperature it cannot possibly affect** — so it runs at **100%, permanently, forever**. If you have an enclosure, it is venting your chamber around the clock and you will never hold a temperature in it. ← this one costs you every ABS print
+9. **Your exhaust fan is PID-controlled by a CPU temperature it cannot possibly affect** — so it runs at **100%, permanently, forever**. If you have an enclosure, it is venting your chamber around the clock and you will never hold a temperature in it. Meanwhile the fan that *can* cool that CPU is PID'd to a target it has already reached, so it never spins up. **Both mainboard fans are wrong, in opposite directions.** ← this one costs you every ABS print
 
 The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) will destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed. **[Fix 5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) is the one that quietly taxes every single print you make**, and it is the only one here whose real answer is "buy a new part".
 
@@ -36,7 +36,7 @@ Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-ti
 | [6](#fix-6--timer-too-close-is-the-emmc-not-a-hot-mainboard) | `Timer too close` shutdowns — it's the eMMC, not heat | 💸 New eMMC | **Destroys prints + the board** |
 | [7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) | PLR `os.fsync()` per move → `move queue overflow`, dead flash | Free | **Destroys prints + your eMMC** |
 | [8](#fix-8--m106-p1-does-not-do-what-you-think-and-nobody-documents-the-fans) | `M106 P` is decorative — both part fans always move together | Free | Undocumented |
-| [9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) | Exhaust fan PID'd to `temperature_host` → stuck at 100% forever | Free | **Wrecks enclosed printing** |
+| [9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) | Both mainboard fans PID'd to the wrong thing — exhaust stuck at 100%, board fan stuck at 10% | Free | **Wrecks enclosed printing** |
 
 ---
 
@@ -781,9 +781,11 @@ SET_FAN_SPEED FAN=fan1 SPEED=1.0     ; front fan only
 
 Put those in your slicer's custom gcode if you want asymmetric cooling. `M106` will always hit both.
 
-**`fan2` and `hotend_fan` are closed-loop on temperature and they're right — leave them alone.** If you need to move a `temperature_fan` target it's `SET_TEMPERATURE_FAN_TARGET`, not `SET_FAN_SPEED`.
+**`hotend_fan` is closed-loop and it is right — leave it alone.** If you need to move a `temperature_fan` target it's `SET_TEMPERATURE_FAN_TARGET`, not `SET_FAN_SPEED`.
 
-> **`fan3` is the exception, and it is not fine.** I originally wrote here that the stock 50 °C / 60 °C targets were sane and should be left alone. **That was wrong about `fan3`, and [Fix 9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) is the correction.** `fan3`'s 60 °C target is *below the temperature its sensor idles at*, and the fan on that pin is the exhaust — it cannot cool the CPU it is chained to. The loop never closes and the fan never stops.
+> **`fan2` and `fan3` are both wrong, and [Fix 9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) is the correction.** I originally wrote here that the stock 50 °C / 60 °C targets were sane. They are not. **`fan3`'s 60 °C target sits *below* where its sensor idles**, so the exhaust pegs at 100% and never stops. **`fan2`'s 50 °C target sits *at* where its sensor idles**, so the board fan loafs at 10% and never starts. One fan can never reach its target and one has never left it — and neither number is a tuning problem.
+
+> **Beware `TARGET=0` on a `temperature_fan`.** It does not mean "full speed because the target is unreachable". It **disables the fan** — duty `0.00`. `TARGET=1` is what gives you 100%. This is the opposite of most people's first guess, and it is a good way to silently cook your mainboard while you experiment.
 
 ### Verify
 
@@ -875,7 +877,7 @@ Steppers disabled, heaters off, idle. **The exhaust (`fan3`, PA2) was pinned at 
 
 > **Soak first, or you will measure nothing but the board warming up.** After a power cycle the MCU climbs for a quarter of an hour. Start recording immediately and that warm-up lands in your baseline and flatters the next phase — it is how an earlier version of this table produced a number I had to withdraw. This run held phase-A conditions for **15 minutes before recording anything**, until drift fell from +1.59 K/min to +0.12 K/min.
 
-> **Not reproducible on a stock SV08.** The machine under test has the **bottom-plate mainboard fan fitted on `PA1`** — the community mod above. A stock printer has nothing on that header, so there is no fan to vary: `temperature_host` never comes down and the exhaust just sits pinned at 100% forever. **The mod does not cause the bug — it partially masks it.**
+> **Reproducible on a stock SV08 — I said otherwise here, and I was wrong.** An earlier version of this section claimed `PA1` ships empty and that the fan I measured was an aftermarket addition. It isn't. **`PA1` ships with Sovol's own loud 24 V 4010**, and the Noctua on my machine is a *replacement* in the same header, on the same PID. So you can run this measurement on a stock printer today — you will just do it with a noisier fan. What the mod changes is the noise, not the wiring.
 
 | Phase | bottom fan (`fan2`, PA1) | exhaust (`fan3`, PA2) | MCU | host CPU |
 |---|---|---|---|---|
@@ -916,51 +918,179 @@ t=483s   host 59.35 °C    fan3 duty 0.10   <-- target reached, for the first ti
 
 **The exhaust fan hit its setpoint exactly once in its life — and only because a different fan did the work for it.**
 
-> **What this means if your machine is stock.** That board fan is the aftermarket mod on `PA1`. You don't have one. So on your printer the host never falls below 60 °C, the exhaust PID never sees a negative error, and **duty never leaves 1.00** — the throttle-down above simply never happens. The bug is *worse* on a stock machine than on the one I measured. Fitting a mainboard fan doesn't fix the exhaust; it just drags the host temperature low enough that the broken loop occasionally shuts up.
+> **What this means if your machine is stock.** You have the same fan on `PA1` that I do — Sovol's, not a Noctua — driven by the same PID, whose `target_temp: 50` sits *at* the MCU's idle temperature. So it loafs at its 10% floor and never spins up, the host never falls below 60 °C, the exhaust PID never sees a negative error, and **duty never leaves 1.00.** The throttle-down above only happened because I forced that fan to full. Stock, you get the pinned exhaust and none of the cooling — the hardware to fix it is already bolted to your printer, idling.
 
 ### Fix
 
-Give the exhaust back to yourself. In `printer.cfg`, delete the `[temperature_fan fan3]` block and uncomment Sovol's own:
+Both mainboard fans are wrong, in opposite directions, and you have to fix them together — because **fixing one on its own breaks the other.** That is the whole trap, and it is why this section is longer than you want it to be.
+
+* `PA1` (the board fan) is PID'd to a target it has already reached, so it **never spins up.**
+* `PA2` (the exhaust) is PID'd to a target it can never reach, so it **never spins down.**
+* Pin `PA1` to full — the obviously correct thing — and the host CPU drops below 60 °C, which is the *exhaust's* setpoint. The exhaust promptly throttles itself to 10% and **stops venting your chamber.**
+
+So: take both fans out of the PID's hands.
+
+#### 1. The board fan — pin it at 100% and hide it
+
+Replace `[temperature_fan fan2]` with a plain always-on pin. There is no temperature at which you want *less* airflow over your own mainboard, so there is nothing to control and nothing to put in the UI:
 
 ```ini
-[fan_generic fan3]           # exhaust fan - was a temperature_fan PID'd to
-pin: PA2                     # temperature_host, a CPU it cannot cool.
-max_power: 1.0               # Unreachable 60 C target => pinned at 100% forever.
+[output_pin _mainboard_fan]
+# PA1 = board silkscreen FAN1 = the fan under the mainboard.
+# Cools the mainboard MCU *and* the host CPU. Nothing else in the bay moves air.
+# Held at 100%: there is no reason to ever run it slower.
+# Leading underscore hides it from Mainsail - there is nothing to adjust.
+# shutdown_value 1.0 = keeps cooling the board even if Klipper shuts down.
+pin: PA1
+value: 1.0
+shutdown_value: 1.0
 ```
 
-That also un-breaks the dead `M106 P3` branch described in [Fix 8](#fix-8--m106-p1-does-not-do-what-you-think-and-nobody-documents-the-fans) — `SET_FAN_SPEED` refuses a `temperature_fan`, but a `fan_generic` is exactly what it wants. `M106 P3 S255` starts working the day you make this change.
+**Do this only if your fan is quiet.** Pinning Sovol's stock 4010 at 100% forever means it screams at you forever. Fit the Noctua first (above), *then* pin it. If you are staying on the stock fan, leave `[temperature_fan fan2]` alone and drop its `target_temp` to `45` instead — it will at least wake up.
 
-Now the exhaust is **off by default** and you drive it deliberately:
+**A `shutdown_value` of `1.0` is deliberate.** Klipper's emergency shutdown is exactly when you want the board still being cooled.
 
-```gcode
-SET_FAN_SPEED FAN=fan3 SPEED=0      ; ABS/ASA - let the chamber hold its heat
-SET_FAN_SPEED FAN=fan3 SPEED=1.0    ; PLA/PETG, or an end-of-print fume purge
-```
+#### 2. Give the MCU its temperature back
 
-Put it in your slicer's per-filament start/end gcode and the chamber finally behaves.
-
-**Consider dropping `fan2`'s target while you're in there.** Its `target_temp: 50` sits right at the MCU's idle temperature (~49.6 °C), so the one fan that actually works loafs at its 10% floor and never spins up. `target_temp: 45` makes it run — and since it's the only thing cooling the electronics bay, that's the fan you *want* awake:
+The `temperature_fan` you just deleted was the only thing putting the mainboard MCU on screen. Sovol ships the proper sensor for it **commented out**. Uncomment it:
 
 ```ini
-[temperature_fan fan2]
-target_temp: 45              # was 50 - MCU idles at ~49.6, so the fan never woke up
+[temperature_sensor MCU_Temp]
+sensor_type: temperature_mcu
+min_temp: 0
+max_temp: 100
 ```
 
-Measured at full: MCU 39.1 °C, host 51.0 °C. Both comfortable — and note that on the test machine those numbers come from the **mainboard fan on `PA1`**, not from the exhaust. Check yours is **blowing inward, onto the board**: that orientation is worth **8.7 K on the MCU and 11.7 K on the host CPU** versus the same fan turned around. Klipper's existing `fan2` PID drives it either way and will never tell you which way it faces.
+Now the chip reads out next to the toolhead's, as a temperature — which is all it ever was.
+
+#### 3. The exhaust — make it a fan you command
+
+```ini
+[fan_generic Chamber_Exhaust]
+# PA2 = board silkscreen FAN2 = big rear fan. Vents the PRINT CHAMBER, nothing else.
+# Was a [temperature_fan] PID'd against the HOST CPU - a chip it is not near and
+# cannot cool. That made chamber venting a side effect of CPU temperature.
+pin: PA2
+kick_start_time: 0.5
+off_below: 0.05
+```
+
+This also un-breaks the dead `M106 P3` branch from [Fix 8](#fix-8--m106-p1-does-not-do-what-you-think-and-nobody-documents-the-fans) — `SET_FAN_SPEED` refuses a `temperature_fan`, but a `fan_generic` is exactly what it wants. Point the branch at the new name in `Macro.cfg` (do this in **both** `M106` and `M107`; the `fan == 'fan3'` test stays — it is the *P-index* test, not the fan's name):
+
+```jinja
+    {% if fan == 'fan3'%}
+            SET_FAN_SPEED FAN=Chamber_Exhaust SPEED={speed}
+    {% else %}
+```
+
+`M106 P3 S255` starts working the day you make this change. So does your slicer.
+
+#### 4. A control a human can use
+
+A rear fan at 100% is loud. Give yourself 10% steps, with a real OFF for ABS:
+
+```ini
+[gcode_macro EXHAUST]
+description: Chamber exhaust speed, 10% steps. S=0 is a real OFF (use for ABS).
+gcode:
+    {% set s = params.S|default(100)|int %}
+    {% if s <= 0 %}
+        {% set s = 0 %}
+    {% else %}
+        {% set s = [[(((s + 5) // 10) * 10), 10]|max, 100]|min %}
+    {% endif %}
+    SET_FAN_SPEED FAN=Chamber_Exhaust SPEED={ s / 100 }
+    RESPOND MSG="Chamber exhaust: {s}%"
+```
+
+`EXHAUST S=70`. Anything above zero clamps to a 10% floor; `S=0` is the deliberate exception, so ABS can have a genuinely still chamber.
+
+#### 5. The sticky-fan trap — the part everyone will skip
+
+**Read this one.** A `fan_generic` has **two** default behaviours, and neither is the one you want. Both come straight from Klipper's [`fan.py`](https://github.com/Klipper3d/klipper/blob/master/klippy/extras/fan.py):
+
+* **At boot it is OFF.** `last_fan_value` initialises to `0.`, and `_handle_request_restart()` calls `set_speed(0.)` — so a reboot or a `FIRMWARE_RESTART` leaves the exhaust at **zero**.
+* **Between prints it is sticky.** Nothing in Klipper resets a `fan_generic` when a job ends. Whatever the last job set, the next job inherits.
+
+Now look at what the slicer actually emits:
+
+* **ABS/ASA** with air filtration configured: `M106 P3 S0` at the start. Exhaust → **0**.
+* **PLA/PETG**: **nothing at all.** I grepped a real PETG job off the printer — zero `M106 P3` anywhere in the file.
+
+Put those together. Print one ABS part, then print PLA. The ABS job set the exhaust to 0; the PLA job never mentions it; **the fan stays at 0 and you never find out.** Your chamber silently stops venting, job after job, until you happen to look.
+
+So you need **both** halves: a default asserted at boot (because boot leaves it off), and a hand-back after every job (because jobs are sticky). Boot:
+
+```ini
+[delayed_gcode _exhaust_boot_default]
+# A fan_generic comes up at 0 after boot/FIRMWARE_RESTART. Assert the default.
+initial_duration: 3.0
+gcode:
+    SET_FAN_SPEED FAN=Chamber_Exhaust SPEED=1.0
+```
+
+And the same line at the end of **`END_PRINT`** *and* **`CANCEL_PRINT`** in `Macro.cfg` — a cancelled ABS print leaves the fan at 0 exactly like a finished one:
+
+```ini
+    SET_FAN_SPEED FAN=Chamber_Exhaust SPEED=1.0
+```
+
+> **Why the end of the print and not the start.** Putting the reset in your start macro looks equivalent and isn't. It bets on the slicer emitting its air-filtration command *after* the start macro runs — and if that bet loses, your ABS print gets a 100% exhaust and warps. Restoring at the *end* cannot lose that race: whatever the job did to the fan, the job undoes on its way out. **Fail safe, not fail loud.**
+
+> **Find your real start macro before you go patching one.** On the SV08 the slicer calls **`START_PRINT`** (`Macro.cfg`). There is also a **`PRINT_START`** in `plr.cfg` that nothing ever calls — patch that one and you will change nothing and believe you fixed it.
+
+#### 6. The slicer side (OrcaSlicer)
+
+The printer half is done; the slicer half is where you actually get ABS to work. In Orca:
+
+1. **Printer Settings → Basic information → tick "Exhaust fan"** (`support_air_filtration`). Miss this and Orca emits **no `M106 P3` at all**, and everything below is dead config.
+2. **Filament → Cooling → Fan control → Air filtration**, per filament:
+
+| Filament | During print | On completion | Why |
+|---|---|---|---|
+| **ABS / ASA** | **0%** | **100%** | A vented chamber is a cold chamber, and a cold chamber warps ABS. Purge the fumes *after*. |
+| **PLA / PETG** | 100% | 100% | Nothing to hold in. Vent it. |
+
+> **Orca ships ABS, ASA, PC and PAHT-CF profiles with air filtration ON at 70%** — during the print *and* after it ([OrcaSlicer #9002](https://github.com/SoftFever/OrcaSlicer/issues/9002), open, unassigned). Those are exactly the filaments that need a *hot* chamber. It is backwards, it is the default, and it is fighting your enclosure. Change it.
 
 ### Verify
 
 ```bash
-curl -s "http://<printer-ip>:7125/printer/objects/query?fan_generic%20fan3&temperature_fan%20fan2" | python3 -m json.tool
+curl -s "http://<printer-ip>:7125/printer/objects/query?fan_generic%20Chamber_Exhaust&output_pin%20_mainboard_fan&temperature_sensor%20MCU_Temp" | python3 -m json.tool
 ```
 
-`fan3` should now report `"speed": 0.0` on an idle machine — **not** the `1.0` it has shown every second since you unboxed it. Send `SET_FAN_SPEED FAN=fan3 SPEED=1` and hear the exhaust come up; send `SPEED=0` and hear it stop, probably for the first time.
+Then walk every path — each of these should be audible:
 
-Then heat your chamber and watch it actually climb.
+```gcode
+EXHAUST S=0        ; a real stop. Probably the first in the fan's life.
+EXHAUST S=37       ; -> 0.40  (snaps to 10% steps)
+EXHAUST S=3        ; -> 0.10  (floor)
+M106 P3 S128       ; -> 0.50  (the slicer's path)
+M107 P3            ; -> 0.00  (slicer OFF bypasses the floor)
+```
+
+Then prove both halves of the sticky trap are covered:
+
+* **Reboot the printer** and query again: **1.00**, not `0.0`. That is `_exhaust_boot_default` doing its job.
+* **Run an ABS job** (or just send `EXHAUST S=0`, then `END_PRINT`) and query: **1.00**. That is the `END_PRINT` restore, and it is what stops an ABS print from silently poisoning the next PLA one.
+
+### The numbers
+
+Idle, steppers off, heaters off — stock config versus the config above:
+
+| | stock | fixed |
+|---|---|---|
+| Mainboard MCU | 47.7 °C | **38.1 °C** |
+| Mainboard host CPU | 62.7 °C | **50.6 °C** |
+| Toolhead MCU | 43.7 °C | 43.7 °C (unchanged, as expected) |
+
+And the exhaust now sits wherever you put it, instead of wherever the CPU's temperature happens to leave it.
+
+**These are idle figures — a floor, not the answer.** The complaint that started all of this was a host CPU over 70 °C *during a print*, with the bed radiating into the bay. A fan's worth grows with the temperature difference it works across, so expect more than 11.7 K when it matters. But that measurement is still owed.
 
 ### Revert
 
-Restore the `[temperature_fan fan3]` block and re-comment `[fan_generic fan3]`. `FIRMWARE_RESTART`. The fan goes back to 100% forever.
+Restore `[temperature_fan fan2]` and `[temperature_fan fan3]`, re-comment `[temperature_sensor mcu_temp]`, undo the `Macro.cfg` edits, `FIRMWARE_RESTART`. The board fan goes back to idling at 10% and the exhaust goes back to 100% forever.
 
 ### The general trap
 
@@ -1006,7 +1136,7 @@ curl -s http://<printer-ip>:7125/server/files/config/printer.cfg
 
 ## Keywords
 
-Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement · SV08 fan not working · SV08 M106 P1 both fans · Klipper M106 P parameter ignored · SV08 which fan is fan0 fan1 · SV08 part cooling fan front rear · SV08 fan runs at 0% · fan spinning but Mainsail shows 0 · SV08 hotend fan always on · heater_fan 45C Klipper · SV08 fan2 fan3 temperature_fan · Klipper fan stuck at 10 percent · min_speed 0.1 temperature_fan · SV08 exhaust fan header · SV08 fan_generic fan3 commented out · PA2 pin conflict SV08 · SET_FAN_SPEED vs M106 Klipper · SV08 fan rpm null · SV08 no fan tachometer · control SV08 fans individually · SV08 fan always at 100% · SV08 exhaust fan runs constantly · SV08 fan never turns off · SV08 loud fan idle · temperature_fan stuck at 100 percent · Klipper temperature_fan never reaches target · target_temp below idle temperature · SV08 temperature_host 65C · CB1 host temp high SV08 · SV08 host fan does not exist · SV08 PA2 exhaust fan · SV08 enclosure will not heat up · SV08 chamber temperature too low · SV08 ABS warping enclosure · enclosure never gets warm 3D printer · exhaust fan venting heated chamber · SV08 ASA printing enclosure · Klipper PID fan no authority · SV08 mainboard fan cools CB1 · SV08 fan2 target_temp 50 · SET_TEMPERATURE_FAN_TARGET 0 disables fan · Klipper temperature_fan target 0 turns fan off · SV08 M106 P3 exhaust fan working
+Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement · SV08 fan not working · SV08 M106 P1 both fans · Klipper M106 P parameter ignored · SV08 which fan is fan0 fan1 · SV08 part cooling fan front rear · SV08 fan runs at 0% · fan spinning but Mainsail shows 0 · SV08 hotend fan always on · heater_fan 45C Klipper · SV08 fan2 fan3 temperature_fan · Klipper fan stuck at 10 percent · min_speed 0.1 temperature_fan · SV08 exhaust fan header · SV08 fan_generic fan3 commented out · PA2 pin conflict SV08 · SET_FAN_SPEED vs M106 Klipper · SV08 fan rpm null · SV08 no fan tachometer · control SV08 fans individually · SV08 fan always at 100% · SV08 exhaust fan runs constantly · SV08 fan never turns off · SV08 loud fan idle · temperature_fan stuck at 100 percent · Klipper temperature_fan never reaches target · target_temp below idle temperature · SV08 temperature_host 65C · CB1 host temp high SV08 · SV08 host fan does not exist · SV08 PA2 exhaust fan · SV08 enclosure will not heat up · SV08 chamber temperature too low · SV08 ABS warping enclosure · enclosure never gets warm 3D printer · exhaust fan venting heated chamber · SV08 ASA printing enclosure · Klipper PID fan no authority · SV08 mainboard fan cools CB1 · SV08 fan2 target_temp 50 · SET_TEMPERATURE_FAN_TARGET 0 disables fan · Klipper temperature_fan target 0 turns fan off · SV08 M106 P3 exhaust fan working · SV08 chamber exhaust fan control · Klipper fan_generic off after reboot · Klipper fan_generic sticky between prints · Klipper fan resets to 0 on FIRMWARE_RESTART · OrcaSlicer air filtration SV08 · OrcaSlicer exhaust fan not working · support_air_filtration Orca · activate_air_filtration_during_print · OrcaSlicer ABS air filtration 70% default wrong · OrcaSlicer issue 9002 · PLA gcode has no M106 P3 · SV08 START_PRINT vs PRINT_START · plr.cfg PRINT_START never called · Klipper output_pin always on fan · Klipper shutdown_value fan · hide fan from Mainsail leading underscore · Klipper section name spaces not allowed · SV08 mainboard fan always 100% · SV08 temperature_sensor mcu_temp commented out · SV08 MCU temperature missing from Mainsail · SV08 exhaust throttles when host is cool · Klipper temperature_fan target at idle temp never spins up
 
 ## License
 
