@@ -852,35 +852,53 @@ One loop has a controller and no fan. The other has a fan that cannot reach its 
 
 None of those mod listings say which way round the fan goes, and it is easy to get wrong — because **the wrong way still works.** That is what makes it worth a paragraph.
 
-The bay already has an extractor: the exhaust on `PA2`. Mount your new fan blowing **outward** and you now have **two extractors and no intake.** The electronics bay goes to negative pressure and draws its replacement air through whatever gaps, seams and cable pass-throughs leak best. Air does cross the board — but along whatever path happens to leak, not over the hot parts. It cools. It cools *badly*, and it gives you no hint that anything is wrong.
+**This fan is the only thing that moves air through the electronics bay.** The big rear exhaust does not help you here — it vents the *print chamber*, a different compartment. Nothing else in the bay moves air at all.
 
-Mount it blowing **inward, onto the board**, and the two fans stop fighting: the bottom fan pushes fresh air in, the `PA2` exhaust pulls it out, and the flow runs one way across the board. Same two fans, same power, air actually where it's needed.
+So mount it blowing **outward** and it becomes an extractor with no intake. The bay drops to negative pressure and pulls its replacement air in through whatever gaps, seams and cable pass-throughs leak best. Air does cross the board — but along whatever path happens to leak, not over the hot parts. It cools. It cools *badly*, and it gives you no hint that anything is wrong.
+
+Mount it blowing **inward, onto the board**, and the air lands where the heat is: straight onto the CPU and the stepper drivers, then out through the same gaps. Same fan, same power, air actually where it's needed.
 
 The fan frame carries two moulded arrows — one for rotation, one for airflow. **Point the airflow arrow at the mainboard.**
 
 > **If yours is in backwards, unscrew it and physically rotate it 180°.** Do *not* try to fix it by swapping the two wires: reversing polarity on a brushless DC fan does not reverse its direction, it simply stops it from starting, and leaving a stalled coil energised can destroy the fan's driver. There is no wiring trick. Flip the hardware.
 
-*(Measured on this machine, backwards: the fan still pulled the MCU down about 5 K. That 5 K is what the leak paths were worth. Getting it the right way round should beat it comfortably — that is the whole point of the warning. It is the third thing on this board that works just well enough to hide the fact that it's wrong.)*
+**Measured on this machine, both ways round.** Backwards, the fan still pulled the MCU down about **5 K** — that 5 K is what the leak paths were worth. Turned around to blow in, the *same fan at the same speed* is worth **8.7 K on the MCU and 11.7 K on the host CPU** (full numbers below). **Flipping it roughly doubled it.** It is the third thing on this board that works just well enough to hide the fact that it's wrong.
 
 ### The measurement
 
-Steppers disabled, heaters off, 20 minutes, sampling every 20 s. `fan3` is the exhaust on PA2.
+Steppers disabled, heaters off, idle. **The exhaust (`fan3`, PA2) was pinned at duty 1.00 for the entire run** so its PID could not absorb the change into its own duty instead of into temperature. Only the bottom-plate fan (`fan2`, PA1) was varied. Each phase ran 8 minutes; the figure is the mean of the last 3.
 
-> **Read this before you try to reproduce it.** The machine under test has a **bottom-plate mainboard fan fitted on `PA1`** — the community mod above. A stock SV08 has nothing on that header, so phase B is not reproducible on an unmodified printer: with no board fan, `temperature_host` never comes down, and your exhaust just stays pinned at 100% the entire time. **The mod does not cause the bug — it partially masks it.** See the note under the results.
->
-> **Two caveats on the magnitudes below, in the interest of not overselling them.** First, that bottom-plate fan turned out to be **mounted backwards** (blowing out — see the warning above), so these deltas are what a *misfitted* board fan buys; a correctly-oriented one should do better. Second, `fan3`'s PID was **left live** during the run, so it was free to absorb some of the change into its own duty instead of into temperature. The **direction** of every result below is solid and the phase-C conclusion does not depend on the numbers at all — but treat the exact kelvin figures as indicative, not precise. A cleaner rerun (exhaust pinned, longer phases) is pending.
+> **Soak first, or you will measure nothing but the board warming up.** After a power cycle the MCU climbs for a quarter of an hour. Start recording immediately and that warm-up lands in your baseline and flatters the next phase — it is how an earlier version of this table produced a number I had to withdraw. This run held phase-A conditions for **15 minutes before recording anything**, until drift fell from +1.59 K/min to +0.12 K/min.
 
-| Phase | fan2 | fan3 | MCU Δ | host Δ |
+> **Not reproducible on a stock SV08.** The machine under test has the **bottom-plate mainboard fan fitted on `PA1`** — the community mod above. A stock printer has nothing on that header, so there is no fan to vary: `temperature_host` never comes down and the exhaust just sits pinned at 100% forever. **The mod does not cause the bug — it partially masks it.**
+
+| Phase | bottom fan (`fan2`, PA1) | exhaust (`fan3`, PA2) | MCU | host CPU |
 |---|---|---|---|---|
-| **A** — both stock | idle (0.10 floor) | **1.00** | **+0.59 K** | **+2.92 K** — board *warming* |
-| **B** — force fan2 to full | **1.00** | stock | **−7.01 K** | **−6.00 K** |
-| **C** — starve fan3 to its floor | held 1.00 | **0.10** | −0.75 K | **−2.02 K** — *still falling* |
+| **A** | idle (0.10 floor) | pinned 1.00 | 47.74 °C | 62.67 °C |
+| **B** | **1.00** (blowing in) | pinned 1.00 | **39.07 °C** | **50.96 °C** |
+| | | | **−8.67 K** | **−11.72 K** |
 
-Read those bottom two rows again.
+**The bottom-plate fan is worth 11.7 K on the host CPU.** The exhaust never moved. A fan blowing over the *electronics bay* is the only thing cooling that chip — obvious in hindsight, since it is the only thing moving air across it at all.
 
-**Phase B: the board fan cooled the host by 6 K.** A fan blowing over the *electronics bay* is what actually cools the CPU. Obvious in hindsight — it's the only thing moving air across the SoC at all.
+And these are **idle** figures. A fan's effect grows with the temperature difference it works across, and the host's real problem is mid-print — bed at 60–100 °C radiating into the bay, steppers and drivers dumping heat in, host past 70 °C. **Treat 11.7 K as a floor, not a ceiling.**
 
-**Phase C: cut the exhaust fan to its floor and the host *keeps getting colder*.** Remove the fan supposedly responsible for a temperature, and that temperature is unaffected. That's the whole proof. It was never cooling anything in there.
+#### The trap this springs
+
+Watch what the machine did the instant the test released it back to stock:
+
+```
+fan3 (exhaust):  target 60.0   duty 0.10   host 51.5 °C
+```
+
+The chamber exhaust dropped to **10%**. Not 100% — *10%*.
+
+Because the bottom fan had pulled the host CPU down to 51 °C, and the exhaust's PID target is 60 °C. Setpoint reached, so the loop backed off. The exhaust had only ever run flat out **because the host was too hot to ever reach target.**
+
+> **Cool your electronics properly and the chamber exhaust switches itself off.**
+
+Chamber venting on this printer is slaved to how well an unrelated fan in another compartment cools the CPU. The better your board cooling gets, the less your chamber gets vented — and nothing in the UI will ever tell you that is why. This is the single strongest argument for the config change below: as long as `PA2` is a `temperature_fan` bound to `temperature_host`, **your chamber exhaust is not yours to control.**
+
+**Independent proof, from an earlier run:** starve the exhaust to its 0.10 floor and the host *keeps getting colder* (−2.02 K, still falling). Remove the fan supposedly responsible for a temperature, and that temperature is unaffected. It was never cooling anything in there.
 
 And the moment that makes it undeniable — in phase B, as the *board* fan dragged the host down through 60 °C, watch the exhaust fan's own PID finally back off:
 
@@ -923,7 +941,7 @@ Put it in your slicer's per-filament start/end gcode and the chamber finally beh
 target_temp: 45              # was 50 - MCU idles at ~49.6, so the fan never woke up
 ```
 
-Measured at full: MCU 42.7 °C, host 57.7 °C. Both comfortable — and note that on the test machine those numbers come from the **mainboard fan on `PA1`**, not from the exhaust. If your `PA1` header is empty (stock), fit a board fan; it costs a few euro, drops the MCU by 7 K and the host by 6 K, and Klipper's existing `fan2` PID drives it with no config change at all.
+Measured at full: MCU 39.1 °C, host 51.0 °C. Both comfortable — and note that on the test machine those numbers come from the **mainboard fan on `PA1`**, not from the exhaust. If your `PA1` header is empty (stock), fit a board fan **blowing inward**; it costs a few euro, drops the MCU by **8.7 K** and the host CPU by **11.7 K**, and Klipper's existing `fan2` PID drives it with no config change at all.
 
 ### Verify
 
