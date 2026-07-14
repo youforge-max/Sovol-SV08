@@ -2,15 +2,19 @@
 
 > Fixes you need after buying a Sovol SV08: warped bed (v1 & v2 — no DIY fix works), paused prints going cold and ruining the job, timelapse autorender resetting every boot, the Moonraker "too old" nag, and cryptic G-code macro buttons.
 
-Five things on a stock **Sovol SV08** that you will hit sooner or later:
+Seven things on a stock **Sovol SV08** that you will hit sooner or later:
 
 1. **Timelapse auto-render turns itself off after every reboot.**
 2. **Mainsail nags that Moonraker is too old** — and the updater is disabled.
 3. **The macro dashboard is full of cryptic buttons** named `G31`, `G34`, `M106`, `M600`.
 4. **A paused print goes cold after 30 minutes and is ruined.** ← this one costs you real prints
 5. **The bed is warped** — on both the original bed and the "v2" revision. ← this one costs you *every* print
+6. **Random `Timer too close` shutdowns mid-print.** Every forum will tell you it's heat or EMI. On my machine it was a **dying eMMC**. ← this one costs you the board
+7. **Power-loss recovery calls `os.fsync()` on every single move.** It kills prints with organic supports or z-hop *now*, and it is very likely what kills the eMMC in #6. ← this one costs you both
 
 The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) will destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed. **[Fix 5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) is the one that quietly taxes every single print you make**, and it is the only one here whose real answer is "buy a new part".
+
+**[Fix 6](#fix-6--timer-too-close-is-a-dying-emmc-not-a-hot-mainboard) and [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) are the same story told twice.** Sovol's power-loss-recovery patch forces a write to physical flash on every move; that stalls the host until the MCU gives up (`move queue overflow`, `Timer too close`), and it grinds the eMMC to death over months. I chased the `Timer too close` shutdowns through every forum thread I could find — heat, EMI, fans — and none of it worked. Replacing the eMMC did. Fix 7 is why it wore out.
 
 Each fix below covers what causes it, how to fix it, how to verify it, and how to revert — including *why the obvious fix is wrong* in most of them.
 
@@ -27,6 +31,8 @@ Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-ti
 | [3](#fix-3--mainsail-dashboard-is-full-of-g31--g34--m106--m600-buttons) | Dashboard full of raw G-code buttons | Free | Annoyance |
 | [4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) | Paused print cools down and is ruined | Free | **Destroys prints** |
 | [5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) | Warped bed (v1 **and** v2) — no DIY fix works | 💸 New bed | **Degrades every print** |
+| [6](#fix-6--timer-too-close-is-a-dying-emmc-not-a-hot-mainboard) | `Timer too close` shutdowns — it's the eMMC, not heat | 💸 New eMMC | **Destroys prints + the board** |
+| [7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) | PLR `os.fsync()` per move → `move queue overflow`, dead flash | Free | **Destroys prints + your eMMC** |
 
 ---
 
@@ -454,6 +460,216 @@ Bolt the old bed back on and re-run `BED_MESH_CALIBRATE` + Z offset. Keep the st
 
 ---
 
+## Fix 6 — "Timer too close" is a dying eMMC, not a hot mainboard
+
+### Symptoms
+
+* Mid-print, usually **late in a long print**, everything stops:
+
+  > **Klipper has shutdown. MCU 'extra_mcu' shutdown: Timer too close**
+
+* Same message on the KlipperScreen LCD and in `klippy.log`.
+* It's intermittent. Short prints are fine. The longer the job, the likelier it dies.
+* It comes back after a `FIRMWARE_RESTART` — and then happens again.
+
+### What the internet will tell you (and why I stopped believing it)
+
+Search this error and you'll be told it's **heat** (put a fan on the mainboard) or **EMI** on the USB line to the toolhead (re-route your cables). The [Sovol forum's own thread on it](https://forum.sovol3d.com/t/sv08-overcoming-high-temperature-klipper-shutdown-problem-my-solution/7623) ends with someone cutting a hole in their desk and bolting a **160 CFM** fan under the machine — and the thread still argues about whether heat was ever the cause.
+
+**On my machine it was the eMMC module.** I went through the forums and tried everything I could find — none of it worked. I swapped the eMMC for a new one off eBay and the shutdowns stopped. No fan, no cable re-routing, no config change.
+
+> **Honesty about this one:** I did not capture `dmesg` before I swapped the module, so I can't hand you a smoking-gun log line from my own printer. What follows is the mechanism that fits, plus **the check I wish I'd run first** — so you can confirm it on *your* machine before spending money.
+
+### Why a bad eMMC produces exactly this error
+
+`Timer too close` is the **MCU** complaining that the **host** missed a deadline. Klipper's host process schedules moves ahead of time and streams them to the MCU; if the host stalls long enough, the MCU runs out of runway and shuts down to avoid doing something dangerous.
+
+A worn eMMC stalls the host beautifully. As flash wears out, the controller starts retrying reads and writes internally, and a write that normally takes microseconds can block for **hundreds of milliseconds**. Klippy is blocked in that write, misses its scheduling window, and the MCU shuts down. It's a host-side stall wearing an MCU-side error message — which is exactly why chasing mainboard temperature never fixes it.
+
+It also explains the two things heat can't:
+
+* **Why it hits late in long prints.** More writes, more accumulated retries.
+* **Why a fan sometimes "fixes" it.** It doesn't. Pulling the machine apart to mount a fan means reseating the eMMC — and a reseated (or replaced) module is the actual change.
+
+### The part that makes this Sovol's fault
+
+See [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move) — Sovol's power-loss-recovery patch writes a file to that eMMC **on every single G1 move**. A print is millions of moves. That is millions of small synchronous writes to a cheap eMMC that has no wear-leveling headroom to spare.
+
+So the two failures are probably one story: PLR hammers the flash, the flash wears out, and you get `Timer too close` shutdowns from a board that was fine when you bought it. **If you replace your eMMC, apply Fix 7 too, or you will wear the new one out the same way.**
+
+### Check yours before you buy anything
+
+The eMMC will tell you it's dying — nobody thinks to ask it. You don't need `mmc-utils`; the kernel exposes it in sysfs:
+
+```bash
+ssh sovol@<printer-ip>
+cat /sys/block/mmcblk2/device/{name,date,life_time,pre_eol_info}
+```
+
+On a healthy printer (this is my current, replacement module):
+
+```
+A3A551            # part name (manfid 0xd6 = Foresee)
+01/2022           # manufacture date
+0x01 0x00         # life_time: Type A / Type B
+0x01              # pre_eol_info
+```
+
+How to read it:
+
+| Value | Meaning |
+|---|---|
+| `pre_eol_info: 0x01` | **Normal** — reserve blocks healthy |
+| `pre_eol_info: 0x02` | **Warning** — 80% of reserve blocks consumed |
+| `pre_eol_info: 0x03` | **Urgent** — replace it now |
+| `life_time: 0x01` | 0–10% of rated write life used |
+| `life_time: 0x02` | 10–20% used … and so on, in 10% bands |
+| `life_time: 0x0b` | Exceeded its rated lifetime |
+
+`pre_eol_info` is the one that matters. **`0x02` or `0x03` and you have found your problem.**
+
+Also look for the flash complaining out loud:
+
+```bash
+dmesg | grep -iE 'mmc[0-9].*(error|timeout|retry|crc|fail)'
+```
+
+Anything here — timeouts, CRC errors, retries — is your smoking gun. A healthy machine prints nothing.
+
+### Fix
+
+Replace the eMMC module. It's a standard socketed module on the CB1-style SBC — mine came from eBay, and any compatible module of the same capacity (32 GB here) will do. Then reflash the Sovol image (or go [mainline](https://github.com/Rappetor/Sovol-SV08-Mainline)) and restore your config backup.
+
+Before you refit the cover: **apply [Fix 7](#fix-7--power-loss-recovery-writes-to-flash-on-every-single-move)**, so the new module doesn't get chewed up the way the old one did.
+
+### Verify
+
+```bash
+cat /sys/block/mmcblk2/device/pre_eol_info     # want 0x01
+cat /sys/block/mmcblk2/device/life_time        # want 0x01 0x00
+dmesg | grep -ic mmc                           # want no errors
+```
+
+Then run the longest print that used to kill it. The real verification is a job that completes.
+
+### Revert
+
+Keep the old module. If the new one changes nothing, you've lost the price of an eMMC and eliminated a variable — swap it back and go looking at the toolhead USB cable, which is the next most likely stall.
+
+---
+
+## Fix 7 — Power-loss recovery writes to flash on every single move
+
+### Symptoms
+
+* Prints with **organic supports**, **spiral z-hop**, or lots of small round moves die partway through:
+
+  > **MCU 'extra_mcu' shutdown: move queue overflow** — or **Timer too close**
+
+* Simple, boxy prints are fine. The more small XYZ moves your model has, the likelier it dies.
+* Over months: the eMMC wears out and the printer starts shutting down at random ([Fix 6](#fix-6--timer-too-close-is-a-dying-emmc-not-a-hot-mainboard)).
+
+This is [issue #33](https://github.com/Sovol3d/SV08/issues/33) on Sovol's own tracker. It is open, has zero comments, and has never been answered.
+
+### Cause
+
+Sovol patched Klipper's `cmd_G1` to support power-loss recovery. Here's what their patch does on **every G1 move that carries X, Y and Z together** — which, with z-hop enabled, is *every move you print*:
+
+```python
+def cmd_G1(self, gcmd):
+    params = gcmd.get_command_parameters()
+    if 'G' in params and 'X' in params and 'Y' in params and 'Z' in params:
+        if self.v_sd.cmd_from_sd:
+            cfg_file_path = '/home/sovol/printer_data/config/saved_variables.cfg'
+            _config = configparser.ConfigParser()
+            _config.read(cfg_file_path)                 # disk read + full INI parse
+            ...
+            with open("/home/sovol/sovol_plr_height", 'w') as height:
+                json.dump(content, height)
+                height.flush()
+                os.fsync(height.fileno())               # force it down to physical flash
+```
+
+Read that again: a **config-file parse**, a **JSON write**, and an **`os.fsync()`** — per move.
+
+`os.fsync()` blocks until the data is physically on the flash. It deliberately defeats every OS write cache. So Klipper's host process — the one whose *entire job* is feeding moves to the MCU ahead of time — stops dead and waits on the eMMC, thousands of times per minute. When it can't feed the MCU fast enough, the MCU runs dry and shuts down: **`move queue overflow`**, or **`Timer too close`**.
+
+Two consequences, both bad:
+
+1. **It kills prints now.** Exactly the prints Sovol's own issue #33 names: organic supports, spiral z-hop.
+2. **It kills your eMMC slowly.** Millions of forced flash writes per print, on a cheap module with no wear-leveling headroom. See [Fix 6](#fix-6--timer-too-close-is-a-dying-emmc-not-a-hot-mainboard) — this is very likely what wears them out.
+
+The bitter part: **the recovery it's paying all this for doesn't work.** The write *is* the failure mode.
+
+### Fix
+
+Comment the block out. Back up first — this is Klipper source, not a config file.
+
+```bash
+ssh sovol@<printer-ip>
+cp ~/klipper/klippy/extras/gcode_move.py ~/gcode_move.py.bak.$(date +%Y%m%d-%H%M%S)
+nano ~/klipper/klippy/extras/gcode_move.py
+```
+
+In `cmd_G1`, comment out the whole block — from `if 'G' in params and 'X' in params ...` down to and including `os.fsync(height.fileno())`. On my fork (`v0.12.0-0-g02eeceb-dirty`) that's **lines 135–158**; check yours, don't blind-patch by line number.
+
+```python
+    def cmd_G1(self, gcmd):
+        # Move
+        params = gcmd.get_command_parameters()
+        # --- SOVOL PLR DISABLED (Sovol3d/SV08 issue #33) ---
+        # This block ran configparser + a json write + os.fsync() on EVERY G1
+        # carrying X, Y and Z. The blocking fsync starves the MCU and hammers
+        # the eMMC. PLR never worked anyway: the write WAS the failure.
+        # if 'G' in params and 'X' in params and 'Y' in params and 'Z' in params:
+        #     ...
+        #         with open("/home/sovol/sovol_plr_height", 'w') as height:
+        #             json.dump(content, height)
+        #             height.flush()
+        #             os.fsync(height.fileno())
+        try:
+            for pos, axis in enumerate('XYZ'):
+                ...
+```
+
+Check it still parses, then restart:
+
+```bash
+python3 -m py_compile ~/klipper/klippy/extras/gcode_move.py && echo OK
+sudo systemctl restart klipper
+```
+
+**You are giving up power-loss recovery.** That's the trade, and it's a good one: it never worked, and it's what's killing your prints and your flash. If you want real PLR, go [mainline](https://github.com/Rappetor/Sovol-SV08-Mainline).
+
+### Verify
+
+Klipper comes back healthy:
+
+```bash
+curl -s http://<printer-ip>:7125/printer/info | python3 -m json.tool   # "state": "ready"
+```
+
+Then prove the write is actually dead. Note the file's fingerprint, run **a real print** (the write only fires for gcode coming from the virtual SD — console moves never triggered it), and check it again:
+
+```bash
+stat -c %y /home/sovol/sovol_plr_height && md5sum /home/sovol/sovol_plr_height
+# ... run a print with z-hop / XYZ moves ...
+stat -c %y /home/sovol/sovol_plr_height && md5sum /home/sovol/sovol_plr_height
+```
+
+**Identical mtime and md5 across a print = fixed.** The file will keep its last pre-patch value forever, which is exactly right. Before the patch, that timestamp moved constantly during a print.
+
+### Revert
+
+```bash
+cp ~/gcode_move.py.bak.<timestamp> ~/klipper/klippy/extras/gcode_move.py
+sudo systemctl restart klipper
+```
+
+Note that a Klipper update from Sovol will also restore their version — and re-break it.
+
+---
+
 ## Bonus: two things worth knowing
 
 **Any Mainsail GUI setting lives in Moonraker's database**, namespace `mainsail` (keys: `console`, `control`, `dashboard`, `gcodeViewer`, `general`, `macros`, `miscellaneous`, `uiSettings`, `view`, …), readable and writable via `/server/database/item`. If you need a schema you don't know, grep the served JS bundle (`/assets/index-*.js`) rather than guessing.
@@ -490,7 +706,7 @@ curl -s http://<printer-ip>:7125/server/files/config/printer.cfg
 
 ## Keywords
 
-Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness
+Sovol SV08 fixes · SV08 timelapse not working · SV08 timelapse auto render turns off after reboot · autorender resets · Mainsail Moonraker too old · update Moonraker to at least v0.8.0-306 · Moonraker version does not support all features of Mainsail · SV08 update_manager 404 · Moonraker v0.8.0-209 dirty · Klipper macro buttons G31 G34 M106 M600 · hide Mainsail macros · Mainsail hiddenMacros · Klipper rename macro breaks slicer · moonraker-timelapse blockedsettings · Sovol SV08 first setup · SV08 Klipper Mainsail Moonraker · SV08 pause turns off heaters · Klipper idle timeout during pause · printer cools down while paused · M600 filament change print ruined · pause too long print failed · Klipper idle_timeout 1800 · SET_IDLE_TIMEOUT pause not working · PAUSE defined twice Macro.cfg mainsail.cfg · _CLIENT_VARIABLE commented out · keep heaters on while paused Klipper · SV08 warped bed · Sovol SV08 bed not flat · SV08 v2 bed still warped · SV08 first layer inconsistent · SV08 bed mesh won't fix warp · SV08 corners lifting · bed mesh changes when heated · thermal bow heated bed · SV08 replacement bed · SV08 graphite bed · R3MEN graphite heated bed SV08 · does quad gantry level fix a warped bed · Klipper bed mesh vs flatness · SV08 Timer too close · Sovol SV08 MCU shutdown mid print · extra_mcu shutdown Timer too close · SV08 move queue overflow · Klipper move queue overflow organic supports · SV08 random shutdown long print · SV08 eMMC failure · replace SV08 eMMC module · eMMC pre_eol_info · eMMC life_time sysfs · mmcblk2 wear check · SV08 power loss recovery bug · sovol_plr_height · Sovol PLR os.fsync every move · Sovol3d SV08 issue 33 · SV08 Klipper shutdown not heat · SV08 EMI toolhead USB · SV08 dying flash · CB1 eMMC replacement
 
 ## License
 
