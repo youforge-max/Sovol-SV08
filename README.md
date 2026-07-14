@@ -715,7 +715,7 @@ Read straight off a stock machine. Only the first two are yours to control:
 | `fan0` | `fan_generic` | `extra_mcu:PA7` | part cooling, **rear** — blows *across* the part | no | only together with `fan1` |
 | `fan1` | `fan_generic` | `extra_mcu:PB1` | part cooling, **front** | no | only together with `fan0` |
 | `hotend_fan` | `heater_fan` | `extra_mcu:PA6` | heatbreak fan — thermostatic, kicks in at extruder ≥ 45 °C | **yes** | **no** |
-| `fan2` | `temperature_fan` | `PA1` (main MCU) | **the mainboard-fan header — and on a stock machine there is no fan plugged into it.** PID to 50 °C on `temperature_mcu`. See **[Fix 9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at)** | no | **no** |
+| `fan2` | `temperature_fan` | `PA1` (main MCU) | **the mainboard fan** — the loud 24 V 4010 under the board, and the only fan cooling the mainboard. PID to 50 °C on `temperature_mcu`. See **[Fix 9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at)** | no | **no** |
 | `fan3` | `temperature_fan` | `PA2` (main MCU) | **the exhaust fan header** — but Sovol PIDs it to 60 °C on `temperature_host`. There is no host fan on this machine. See **[Fix 9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at)** | no | **no** |
 
 Four things fall out of that table immediately:
@@ -729,7 +729,7 @@ Here is the whole mainboard, decoded — every row verified on hardware by drivi
 
 | Silkscreen | MCU pin | Klipper object | Fitted from the factory? |
 |---|---|---|---|
-| `FAN1` | `PA1` | `temperature_fan fan2` | **No.** Bare pins, no connector housing. This is where the [mainboard-fan mod](#and-the-other-mainboard-fan-loop-is-empty) goes. |
+| `FAN1` | `PA1` | `temperature_fan fan2` | Yes — **the mainboard fan.** A cheap 24 V 40×10, and [the loudest thing on the printer](#the-other-mainboard-fan--the-one-that-screams). It is the only fan cooling the mainboard. |
 | `FAN2` | `PA2` | `temperature_fan fan3` | Yes — **the exhaust fan**. |
 | `FAN3` | `PA3` | `output_pin main_led` | Occupied — but **not by a fan.** It drives **the LED**. The wire in it is labelled `LED1`. |
 
@@ -825,7 +825,7 @@ control: pid
 
 Two facts that don't survive contact with each other:
 
-1. **`PA2` is the exhaust fan header.** Sovol's own commented-out block says so, three hundred lines further down the same file — `#[fan_generic fan3] # exhaust fan` / `#pin: PA2`. The community configs agree ([vvuk/sv08-config](https://github.com/vvuk/sv08-config/blob/main/hw-fans-temps.cfg) declares `[fan_generic exhaust_fan]` on PA2), and so does Sovol's own forum ([SV08 64-bit controller pin-out](https://forum.sovol3d.com/t/sv08-64bit-controller-pin-out/5333)). **There is no host/CB1 fan on this machine.** Nothing blows on the SoC.
+1. **`PA2` is the exhaust fan header.** Sovol's own commented-out block says so, three hundred lines further down the same file — `#[fan_generic fan3] # exhaust fan` / `#pin: PA2`. The community configs agree ([vvuk/sv08-config](https://github.com/vvuk/sv08-config/blob/main/hw-fans-temps.cfg) declares `[fan_generic exhaust_fan]` on PA2), and so does Sovol's own forum ([SV08 64-bit controller pin-out](https://forum.sovol3d.com/t/sv08-64bit-controller-pin-out/5333)). **There is no fan dedicated to the host CPU on this machine**, and the exhaust is in a different compartment from it. The only thing that moves air over that chip is the **mainboard fan on `PA1`** — a fan bound to a *different* sensor entirely.
 
 2. **`temperature_host` idles at 63–67 °C**, and the target is **60 °C**.
 
@@ -833,20 +833,25 @@ So the target sits *below where the sensor lives*. The PID error is positive for
 
 This is a closed loop with **no authority**: the actuator cannot move the sensor, by any physical mechanism. Not a tuning problem. There is no value of `pid_Kp` that fixes a fan pointed at the wrong thing.
 
-### And the *other* mainboard fan loop is empty
+### The *other* mainboard fan — the one that screams
 
-While you're in here, look at `[temperature_fan fan2]` on `PA1`. It PIDs `temperature_mcu` to 50 °C — and **on a stock SV08 there is no fan plugged into that header at all.** It ships as bare pins with no connector housing on it. Sovol wrote a control loop for a fan they didn't fit.
+`PA1` is the **mainboard fan** header, and Sovol does fit a fan to it: a cheap **24 V 40×10**, sitting under the board. It is the loudest thing on the machine — by common account roughly **80% of the printer's noise**, and it starts the moment you power on.
 
-So the stock machine has **two broken mainboard fan loops, in opposite directions**:
+Whether it is under control depends on which config you have, and this is where Sovol's own versions disagree with each other:
 
-| Klipper | Pin | PIDs | What's actually on the pin, stock |
-|---|---|---|---|
-| `temperature_fan fan2` | `PA1` | `temperature_mcu` → 50 °C | **nothing. Empty header.** |
-| `temperature_fan fan3` | `PA2` | `temperature_host` → 60 °C | **the exhaust fan** |
+| | Sovol's published config ([Sovol3d/SV08](https://github.com/Sovol3d/SV08/blob/main/home/sovol/printer_data/config/printer.cfg)) | Shipped 2.3.3 image |
+|---|---|---|
+| `PA1` — mainboard fan | **no block at all** — the fan is simply not controlled | `[temperature_fan fan2]`, PID → 50 °C |
+| `PA2` — exhaust fan | `[fan_generic fan3]` — a plain fan you command | `[temperature_fan fan3]`, PID → `temperature_host` |
+| `[temperature_sensor mcu_temp]` | present | **commented out** |
 
-One loop has a controller and no fan. The other has a fan that cannot reach its sensor. The MCU gets **no active cooling from the factory**, which is why the mainboard-fan mod is one of the most-printed SV08 accessories there is ([BrewNinja 4010](https://www.printables.com/model/908513-sovol-sv08-mainboard-4010-fans), [EsZett 120 mm](https://www.printables.com/model/927060-sovol-sv08-mainboard-120mm-fan-mod), [kampfwuffi low-profile](https://www.printables.com/model/1048947-low-profile-mainboard-fan-mount-for-sovol-sv08)).
+Read that carefully, because it is the opposite of what you'd expect: **the newer image fixed the noise and broke the exhaust.** Adding the `PA1` PID is what stops that 4010 from howling. Rebinding `PA2` to the host CPU is what pinned the exhaust at 100% forever. One step forward, one step back, in the same release.
 
-**If you fit one of those, it lands on `PA1` — and Klipper already has a working PID waiting for it.** It starts cooling the moment you plug it in, no config change needed. That is the one thing Sovol got right here, entirely by accident.
+> **Do not "fix" this by reverting to Sovol's published config.** It has nothing on `PA1` — you would hand back the PID that tames the mainboard fan and get the screaming back. Keep `[temperature_fan fan2]` exactly as it is. **`PA2` is the only block that needs changing.**
+
+**The noise fix, while you're in here:** the stock 4010 is the part everyone replaces. The drop-in is a **Noctua NF-A4x10 — the 24 V version** (`PA1` is a 24 V rail; a 12 V Noctua there is over-volted). It ships with a Molex→JST-XH adapter that plugs straight into the header. Mounts for bigger, slower fans are also popular ([BrewNinja 4010](https://www.printables.com/model/908513-sovol-sv08-mainboard-4010-fans), [EsZett 120 mm](https://www.printables.com/model/927060-sovol-sv08-mainboard-120mm-fan-mod), [kampfwuffi low-profile](https://www.printables.com/model/1048947-low-profile-mainboard-fan-mount-for-sovol-sv08)).
+
+Whatever you fit, `PA1`'s existing PID drives it with **no config change** — and the orientation matters more than the model.
 
 #### Fit it blowing *in*, not out
 
@@ -941,7 +946,7 @@ Put it in your slicer's per-filament start/end gcode and the chamber finally beh
 target_temp: 45              # was 50 - MCU idles at ~49.6, so the fan never woke up
 ```
 
-Measured at full: MCU 39.1 °C, host 51.0 °C. Both comfortable — and note that on the test machine those numbers come from the **mainboard fan on `PA1`**, not from the exhaust. If your `PA1` header is empty (stock), fit a board fan **blowing inward**; it costs a few euro, drops the MCU by **8.7 K** and the host CPU by **11.7 K**, and Klipper's existing `fan2` PID drives it with no config change at all.
+Measured at full: MCU 39.1 °C, host 51.0 °C. Both comfortable — and note that on the test machine those numbers come from the **mainboard fan on `PA1`**, not from the exhaust. Check yours is **blowing inward, onto the board**: that orientation is worth **8.7 K on the MCU and 11.7 K on the host CPU** versus the same fan turned around. Klipper's existing `fan2` PID drives it either way and will never tell you which way it faces.
 
 ### Verify
 
