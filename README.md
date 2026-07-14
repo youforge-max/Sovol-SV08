@@ -725,6 +725,16 @@ Four things fall out of that table immediately:
 - **`hotend_fan` is the only fan on this machine with a tachometer** (`extra_mcu:PA1`). `fan0`/`fan1` report `"rpm": null` forever — you cannot detect a dead part-cooling blower in software. Check it by eye.
 - **The Klipper names do not line up with the mainboard silkscreen.** `fan0` and `fan1` are on the **toolhead** board — the `extra_mcu:` prefix is the tell. The mainboard has its own headers silkscreened `FAN1`/`FAN2`/`FAN3`, and Klipper only ever drives two pins down there: `PA1` and `PA2`, which it calls **`fan2` and `fan3`**. So if you drive `fan1` and stare at the mainboard waiting for something to move, nothing will — you're watching the wrong board. (`PA3` is the LED, not a fan.)
 
+Here is the mainboard, decoded — verified on hardware by driving each pin and watching which fan responded:
+
+| Silkscreen | MCU pin | Klipper object | Fitted from the factory? |
+|---|---|---|---|
+| `FAN1` | `PA1` | `temperature_fan fan2` | **No.** Bare pins, no connector housing. This is where the [mainboard-fan mod](#and-the-other-mainboard-fan-loop-is-empty) goes. |
+| `FAN2` | `PA2` | `temperature_fan fan3` | Yes — **the exhaust fan**. |
+| `FAN3` | *undocumented* | **none** | Housing present, but **no Klipper section drives it.** A spare output. Sovol has never published the pinout. |
+
+Sovol's config comments (`#header 1 from the left`, `#header 2 from the left`) count the same way the silkscreen does. The names are what's shifted: **board `FAN1` is Klipper `fan2`, board `FAN2` is Klipper `fan3`.** Check this before you unplug anything in anger.
+
 ### Cause — the `M106` macro
 
 The SV08 has no `[fan]` section, so stock `M106` has nothing to drive. Sovol bridges that with a macro (`Macro.cfg`, ~line 653):
