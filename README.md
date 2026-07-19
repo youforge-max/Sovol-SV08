@@ -1535,8 +1535,10 @@ Not a fix — a small quality-of-life macro that ships in this repo as
 reach for a wipe, a fan swap, or a look at the hotend — without hand-jogging three axes
 every time.
 
-It refuses to run mid-print (`action_raise_error`), homes first if the machine isn't
-homed, and lifts Z *before* it moves in XY so it never drags across the plate.
+It refuses to run mid-print (`action_raise_error`), **always homes first** (`G28`) — after
+a power-up Klipper has no idea where the head is, so it homes unconditionally rather than
+trusting a stale position — and lifts Z *before* it moves in XY so it never drags across
+the plate.
 
 ### The one thing to get right — front is Y=0, not Y_max
 
