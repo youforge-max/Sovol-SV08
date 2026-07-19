@@ -2,7 +2,7 @@
 
 > Fixes you need after buying a Sovol SV08: warped bed (v1 & v2 — no DIY fix works), paused prints going cold and ruining the job, timelapse autorender resetting every boot, the Moonraker "too old" nag, and cryptic G-code macro buttons.
 
-Twelve things on a stock **Sovol SV08** that you will hit sooner or later:
+Twelve things on a stock **Sovol SV08** that you will hit sooner or later — plus one worth adding:
 
 1. **Timelapse auto-render turns itself off after every reboot.**
 2. **Mainsail nags that Moonraker is too old** — and the updater is disabled.
@@ -16,6 +16,7 @@ Twelve things on a stock **Sovol SV08** that you will hit sooner or later:
 10. **The filament sensor pauses your print on a single read of a switch.** No debounce, anywhere. One bounce of a mechanical lever on a machine that shakes — and the machine that shakes it is the one running your job — parks the toolhead mid-print with the filament still loaded. ← this one costs you prints, at random, for no reason
 11. **Your printer beacons to a cloud service you never signed up for**, every two seconds, forever — broadcasting its local IP and hostname to `app.obico.io`, unlinked, with crash telemetry opted in on your behalf. ← this one costs you privacy
 12. **The SSH host keys were generated at the factory in December 2023 and shipped to every unit** — and the default user has passwordless `sudo`. ← this one costs you the machine
+13. **There's no one-button way to park the head for maintenance.** You hand-jog three axes every time you want to reach the nozzle or wipe the bed — and jog Y the wrong way and you crash into the back frame. ← the one thing here to *add*, not fix
 
 The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) will destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed. **[Fix 5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) is the one that quietly taxes every single print you make**, and it is the only one here whose real answer is "buy a new part".
 
@@ -47,6 +48,7 @@ Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-ti
 | [10](#fix-10--one-bounce-of-the-filament-switch-pauses-your-print) | Filament sensor pauses on a single switch read — no debounce | Free | **Pauses prints at random** |
 | [11](#fix-11--your-printer-announces-itself-to-a-cloud-service-you-never-signed-up-for) | Unlinked Obico beacons your LAN IP to a cloud, every 2 s, forever | Free | **Privacy + 20 MB of junk on your eMMC** |
 | [12](#fix-12--ssh-host-keys-from-the-factory-and-passwordless-root) | Factory SSH host keys on every unit + passwordless root | Free | 🔴 **Anyone on your LAN owns the printer** |
+| [13](#fix-13--theres-no-one-button-way-to-park-the-head-for-maintenance) | No one-button park-for-maintenance position — hand-jog every time | Free | ➕ Add-on, not a defect |
 
 ---
 
@@ -1489,51 +1491,23 @@ If your printer is on a network you don't fully control — a flatshare, an offi
 
 ---
 
-## Does any of this apply to the Sovol SV08 Max?
+## Fix 13 — there's no one-button way to park the head for maintenance
 
-Some of it. Sovol quietly fixed three of these on the Max — and carried the worst one forward.
+The only entry here that isn't a defect — the one thing worth **adding** rather than fixing.
+Every other job on this list undoes something Sovol got wrong; this one just fills a gap.
 
-**I do not own an SV08 Max.** Everything below is read out of [Sovol's own published source](https://github.com/Sovol3d/SV08MAX) — the stock `printer.cfg`, `plr.cfg`, `buffer_stepper.cfg`, `Macro.cfg`, `moonraker.conf`, and their patched `klippy/extras/gcode_move.py` — diffed against the SV08. It is a config-level read, not a hands-on one. Treat it as a map, not a measurement.
+### Symptoms
 
-| # | On the SV08 Max |
-|---|---|
-| 4 — paused print goes cold | ✅ **Fixed.** The Max's `_IDLE_TIMEOUT` checks `printer.print_stats.state == "paused"` and skips `TURN_OFF_HEATERS`. The SV08's doesn't. |
-| 9 — exhaust fan PID'd against the CPU | ✅ **Fixed.** The Max has **no `temperature_fan` at all**. The exhaust is a plain `[fan_generic fan3]` on `PE11`. The SV08's worst bug simply does not exist there. |
-| 10 — filament sensor pauses on one read | ✅ **Fixed** — and Sovol landed on the same shape I did. The Max ships `pause_on_runout: False` with a custom `runout_gcode`. That makes the SV08's `pause_on_runout: True` the outlier, not the norm. (The Max's handler isn't a debounce — it calls `CONTINUE_PRINT_D` and keeps printing off the buffer — but the *architecture* is the same: don't let Klipper's built-in pause fire on a single read.) |
-| 7 — PLR `os.fsync()` per move | ❌ **Still there — with the guard loosened.** See [Fix 7](#the-sv08-max-ships-the-same-patch--with-a-looser-guard). This is the one to carry across. |
-| 8 — `M106 P` and the undocumented fans | ⚠️ **Still undocumented, and the map is different.** Max: `fan0` = front part fan (`extra_mcu:PB0`), `fan1` = rear part fan (`extra_mcu:PA7`), `fan2` = auxiliary (`PB0`), `fan3` = exhaust (`PE11`), plus `heater_fan hotend_fan` and a `heater_fan bed_fan` on `PE14`. **Do not reuse my P-numbers on a Max** — re-derive them from your own `printer.cfg`. |
-| 5 — warped bed | ⚠️ Max owners report the same taco. Plus a Max-specific one I have no fix for: the bed **overshooting into an emergency shutdown**, climbing past target at 0% heater power. |
-| 6 — `Timer too close` | ⚠️ Same platform, same eMMC, same PLR patch. Same three causes. Run the [free sysfs check](#check-yours-before-you-buy-anything). |
-| 1, 2, 3 | Same Klipper/Moonraker/Mainsail stack. I did not verify these against the Max image. |
+* You want to reach the nozzle, wipe the plate, or swap a fan, and there's no button for it.
+* So you hand-jog X, then Y, then Z in the Mainsail control panel, every single time.
+* Do it wrong — jog Y to *max* thinking that's the front — and you drive the head into the
+  back frame (see below; on the SV08 the front is Y=0, not Y_max).
 
-### No board cooling on the Max either
+### Fix — add the macro that ships in this repo
 
-The Max's `printer.cfg` has **no mainboard fan** — no `output_pin`, no `heater_fan`, nothing pointed at the electronics. Same as a stock SV08, where the `PA1` header ships empty. A bigger machine with a bigger PSU and the same amount of board cooling: none. If you enclose it, [Fix 9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) is worth reading even though the PID bug it describes is gone.
-
-### The Max answers the chamber-sensor question
-
-The Max ships a `chamber_hot.cfg` (commented out by default): a **separate CAN toolboard** (`[mcu hot_mcu]`), two ordinary 100 K thermistors, a `[heater_generic chamber_temp]` capped at 65 °C on watermark control, and `M141`/`M191` macros.
-
-Two things worth taking from that if you're retrofitting a chamber sensor to an SV08:
-
-1. Sovol's own answer to "the CB1 has no spare GPIO" was **to add another MCU**, not to route sensors through the Linux host. That's also what the community does (a €5 Bluepill + I²C sensor).
-2. They did **not** PID the exhaust against chamber temperature — the chamber heater is a separate `watermark` loop. Which is the right call: the target chamber temperature is filament-dependent (ABS wants it hot and the exhaust *off*; PLA and PETG want the opposite), so no single PID target serves both.
-
-### The Obico beacon and the security holes are identical — the Obico one is worse
-
-The Max ships the same `moonraker-obico.cfg`: `url = https://app.obico.io`, `sentry_opt = in`. And unlike the SV08, the Max's `printer.cfg` **includes `moonraker_obico_macros.cfg` on line 7, uncommented** — so the cloud plugin's macros are loaded into Klipper by default. [Fix 11](#fix-11--your-printer-announces-itself-to-a-cloud-service-you-never-signed-up-for) applies as-is.
-
-The Max's `moonraker.conf` still binds `host: 0.0.0.0`, still lists all of RFC1918 under `trusted_clients`, and still has no `force_logins`. **Anyone on your LAN can move the gantry and start a print, with no credentials.** And [Sovol3d/SV08 issue #26](https://github.com/Sovol3d/SV08/issues/26) — *"SSH host keys not generated on first boot"* — is still open, with zero comments, two years on. Assume it's unfixed on the Max and run [Fix 12](#fix-12--ssh-host-keys-from-the-factory-and-passwordless-root) there too; it costs a minute and cannot break anything.
-
----
-
-## Add-on: a one-button "park for maintenance" macro
-
-Not a fix — a small quality-of-life macro that ships in this repo as
-[`toolhead-maintenance.cfg`](toolhead-maintenance.cfg). It parks the toolhead at the
-**front-center of the bed, at half the Z travel**, so the nozzle and bed are in easy
-reach for a wipe, a fan swap, or a look at the hotend — without hand-jogging three axes
-every time.
+Drop in [`toolhead-maintenance.cfg`](toolhead-maintenance.cfg). It parks the toolhead at the
+**front-center of the bed, at half the Z travel** — nozzle and bed both in easy reach —
+with one button.
 
 It refuses to run mid-print (`action_raise_error`), **always homes first** (`G28`) — after
 a power-up Klipper has no idea where the head is, so it homes unconditionally rather than
@@ -1589,6 +1563,44 @@ On a stock SV08 `position` should read ~`[177.5, 5.0, 173.5, …]` and `homed_ax
 
 Remove `[include toolhead-maintenance.cfg]` from `printer.cfg` and `FIRMWARE_RESTART`
 (optionally delete the file). Nothing else references it.
+
+---
+
+## Does any of this apply to the Sovol SV08 Max?
+
+Some of it. Sovol quietly fixed three of these on the Max — and carried the worst one forward.
+
+**I do not own an SV08 Max.** Everything below is read out of [Sovol's own published source](https://github.com/Sovol3d/SV08MAX) — the stock `printer.cfg`, `plr.cfg`, `buffer_stepper.cfg`, `Macro.cfg`, `moonraker.conf`, and their patched `klippy/extras/gcode_move.py` — diffed against the SV08. It is a config-level read, not a hands-on one. Treat it as a map, not a measurement.
+
+| # | On the SV08 Max |
+|---|---|
+| 4 — paused print goes cold | ✅ **Fixed.** The Max's `_IDLE_TIMEOUT` checks `printer.print_stats.state == "paused"` and skips `TURN_OFF_HEATERS`. The SV08's doesn't. |
+| 9 — exhaust fan PID'd against the CPU | ✅ **Fixed.** The Max has **no `temperature_fan` at all**. The exhaust is a plain `[fan_generic fan3]` on `PE11`. The SV08's worst bug simply does not exist there. |
+| 10 — filament sensor pauses on one read | ✅ **Fixed** — and Sovol landed on the same shape I did. The Max ships `pause_on_runout: False` with a custom `runout_gcode`. That makes the SV08's `pause_on_runout: True` the outlier, not the norm. (The Max's handler isn't a debounce — it calls `CONTINUE_PRINT_D` and keeps printing off the buffer — but the *architecture* is the same: don't let Klipper's built-in pause fire on a single read.) |
+| 7 — PLR `os.fsync()` per move | ❌ **Still there — with the guard loosened.** See [Fix 7](#the-sv08-max-ships-the-same-patch--with-a-looser-guard). This is the one to carry across. |
+| 8 — `M106 P` and the undocumented fans | ⚠️ **Still undocumented, and the map is different.** Max: `fan0` = front part fan (`extra_mcu:PB0`), `fan1` = rear part fan (`extra_mcu:PA7`), `fan2` = auxiliary (`PB0`), `fan3` = exhaust (`PE11`), plus `heater_fan hotend_fan` and a `heater_fan bed_fan` on `PE14`. **Do not reuse my P-numbers on a Max** — re-derive them from your own `printer.cfg`. |
+| 5 — warped bed | ⚠️ Max owners report the same taco. Plus a Max-specific one I have no fix for: the bed **overshooting into an emergency shutdown**, climbing past target at 0% heater power. |
+| 6 — `Timer too close` | ⚠️ Same platform, same eMMC, same PLR patch. Same three causes. Run the [free sysfs check](#check-yours-before-you-buy-anything). |
+| 1, 2, 3 | Same Klipper/Moonraker/Mainsail stack. I did not verify these against the Max image. |
+
+### No board cooling on the Max either
+
+The Max's `printer.cfg` has **no mainboard fan** — no `output_pin`, no `heater_fan`, nothing pointed at the electronics. Same as a stock SV08, where the `PA1` header ships empty. A bigger machine with a bigger PSU and the same amount of board cooling: none. If you enclose it, [Fix 9](#fix-9--your-exhaust-fan-is-pid-controlled-by-a-cpu-it-isnt-pointed-at) is worth reading even though the PID bug it describes is gone.
+
+### The Max answers the chamber-sensor question
+
+The Max ships a `chamber_hot.cfg` (commented out by default): a **separate CAN toolboard** (`[mcu hot_mcu]`), two ordinary 100 K thermistors, a `[heater_generic chamber_temp]` capped at 65 °C on watermark control, and `M141`/`M191` macros.
+
+Two things worth taking from that if you're retrofitting a chamber sensor to an SV08:
+
+1. Sovol's own answer to "the CB1 has no spare GPIO" was **to add another MCU**, not to route sensors through the Linux host. That's also what the community does (a €5 Bluepill + I²C sensor).
+2. They did **not** PID the exhaust against chamber temperature — the chamber heater is a separate `watermark` loop. Which is the right call: the target chamber temperature is filament-dependent (ABS wants it hot and the exhaust *off*; PLA and PETG want the opposite), so no single PID target serves both.
+
+### The Obico beacon and the security holes are identical — the Obico one is worse
+
+The Max ships the same `moonraker-obico.cfg`: `url = https://app.obico.io`, `sentry_opt = in`. And unlike the SV08, the Max's `printer.cfg` **includes `moonraker_obico_macros.cfg` on line 7, uncommented** — so the cloud plugin's macros are loaded into Klipper by default. [Fix 11](#fix-11--your-printer-announces-itself-to-a-cloud-service-you-never-signed-up-for) applies as-is.
+
+The Max's `moonraker.conf` still binds `host: 0.0.0.0`, still lists all of RFC1918 under `trusted_clients`, and still has no `force_logins`. **Anyone on your LAN can move the gantry and start a print, with no credentials.** And [Sovol3d/SV08 issue #26](https://github.com/Sovol3d/SV08/issues/26) — *"SSH host keys not generated on first boot"* — is still open, with zero comments, two years on. Assume it's unfixed on the Max and run [Fix 12](#fix-12--ssh-host-keys-from-the-factory-and-passwordless-root) there too; it costs a minute and cannot break anything.
 
 ---
 
