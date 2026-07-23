@@ -17,7 +17,7 @@ Twelve things on a stock **Sovol SV08** that you will hit sooner or later — pl
 11. **Your printer beacons to a cloud service you never signed up for**, every two seconds, forever — broadcasting its local IP and hostname to `app.obico.io`, unlinked, with crash telemetry opted in on your behalf. ← this one costs you privacy
 12. **The SSH host keys were generated at the factory in December 2023 and shipped to every unit** — and the default user has passwordless `sudo`. ← this one costs you the machine
 13. **There's no one-button way to park the head for maintenance.** You hand-jog three axes every time you want to reach the nozzle or wipe the bed — and jog Y the wrong way and you crash into the back frame. ← the one thing here to *add*, not fix
-14. **`G28` homes Y into the one corner where the filament tube gets pinched — and sensorless homing false-triggers on the drag.** Sovol homes both X and Y positive, into the right-rear corner. The tube binds between toolhead and frame there, StallGuard reads the drag as a stall, and Y stops a few mm early. Sovol's answer is `set_position_z: 0` plus a blind `G0 Z5`, which throws away a known-good Z to lift over the problem. Home X to the *left* instead and the corner never happens. ← costs you a few mm of Y, silently, and chews the tube
+14. **`G28` homes Y into the one corner where the filament tube gets pinched — and sensorless homing false-triggers on the drag.** Sovol homes both X and Y positive, into the right-rear corner. The tube binds between toolhead and frame there, StallGuard reads the drag as a stall, and Y stops a few mm early. Only bites with the gantry high — roughly mid Z travel and up, where the tube is pulled taut; homing from a low gantry looks clean. Sovol's answer is `set_position_z: 0` plus a blind `G0 Z5`, which throws away a known-good Z to lift over the problem. Home X to the *left* instead and the corner never happens. ← costs you a few mm of Y, silently, and chews the tube
 
 The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) will destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed. **[Fix 5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) is the one that quietly taxes every single print you make**, and it is the only one here whose real answer is "buy a new part".
 
@@ -50,7 +50,7 @@ Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-ti
 | [11](#fix-11--your-printer-announces-itself-to-a-cloud-service-you-never-signed-up-for) | Unlinked Obico beacons your LAN IP to a cloud, every 2 s, forever | Free | **Privacy + 20 MB of junk on your eMMC** |
 | [12](#fix-12--ssh-host-keys-from-the-factory-and-passwordless-root) | Factory SSH host keys on every unit + passwordless root | Free | 🔴 **Anyone on your LAN owns the printer** |
 | [13](#fix-13--theres-no-one-button-way-to-park-the-head-for-maintenance) | No one-button park-for-maintenance position — hand-jog every time | Free | ➕ Add-on, not a defect |
-| [14](#fix-14--g28-homes-y-into-the-corner-that-pinches-the-filament-tube) | `G28` homes X and Y into the right-rear corner, pinching the filament tube | Free | **Damages the tube; sensorless Y false-triggers a few mm early** |
+| [14](#fix-14--g28-homes-y-into-the-corner-that-pinches-the-filament-tube) | `G28` homes X and Y into the right-rear corner, pinching the filament tube | Free | **Damages the tube; sensorless Y false-triggers a few mm early — at high Z (mid travel and up)** |
 
 ---
 
@@ -1578,6 +1578,14 @@ Your filament tube is scuffed, kinked or worn where it meets the toolhead. And e
 often `G28` completes without an error but Y lands a few mm short — first layer off in Y,
 a print that starts off the plate, nothing in the log.
 
+**Both symptoms are Z-dependent.** They show up when the gantry is **high — roughly from
+mid Z travel (~170 mm) upward** — and are largely absent low down. High gantry pulls the
+filament tube taut against the frame in the right-rear corner; low gantry leaves it slack,
+so it neither rubs nor loads the motor. So `G28` from a low gantry usually looks fine, and
+`G28` at the end of a tall print — or any home that follows a Z lift — is where the tube
+gets worked and Y false-triggers. Do not conclude the machine is healthy because homing
+from Z 0 is clean.
+
 ### What's wrong
 
 Stock `printer.cfg` homes **both** axes positive:
@@ -1603,7 +1611,9 @@ TMC2209 a *higher* `SGTHRS` means *more sensitive*, and 65 does not leave much m
 Tube drag is load. The toolhead meets that drag part-way through the approach, StallGuard
 fires early, and Klipper sets Y zero **before** the toolhead ever reached the frame. It's
 a false trigger, not lost steps — which is why it's silent, and why it repeats at some
-gantry heights and not others.
+gantry heights and not others. The drag scales with gantry height: above roughly mid Z the
+tube is under tension and adds real load; below that it hangs slack and adds almost none.
+That is the whole of the "sometimes" — it is not random, it tracks Z.
 
 Sovol's own workaround is to lift over the problem, and it makes things worse. Their
 `[homing_override]` ends with:
@@ -1743,7 +1753,9 @@ curl -s -X POST "http://<printer>:7125/printer/gcode/script?script=G28%20X"
 coordinates with `SET_KINEMATIC_POSITION` somewhere in the lift path.
 
 Repeated `G28`s from different starting heights should land Y on the same number every
-time. Before the fix they don't.
+time. Before the fix they don't. **Test high, not low** — raise the gantry to 200 mm or
+more before homing, because that is where the tube pulls tight and where the false trigger
+lives. A clean `G28` from Z 0 tells you nothing.
 
 ### Revert
 
