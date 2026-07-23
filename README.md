@@ -50,7 +50,7 @@ Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-ti
 | [11](#fix-11--your-printer-announces-itself-to-a-cloud-service-you-never-signed-up-for) | Unlinked Obico beacons your LAN IP to a cloud, every 2 s, forever | Free | **Privacy + 20 MB of junk on your eMMC** |
 | [12](#fix-12--ssh-host-keys-from-the-factory-and-passwordless-root) | Factory SSH host keys on every unit + passwordless root | Free | 🔴 **Anyone on your LAN owns the printer** |
 | [13](#fix-13--theres-no-one-button-way-to-park-the-head-for-maintenance) | No one-button park-for-maintenance position — hand-jog every time | Free | ➕ Add-on, not a defect |
-| [14](#fix-14--g28-homes-y-into-the-corner-that-pinches-the-filament-tube) | `G28` homes X and Y into the right-rear corner, pinching the filament tube | Free | **Damages the tube; sensorless Y false-triggers a few mm early — at high Z (mid travel and up)** |
+| [14](#fix-14--g28-homes-y-into-the-corner-that-pinches-the-filament-tube) | `G28` homes X and Y into the right-rear corner, pinching the filament tube | Free | **Damages the tube; sensorless Y false-triggers a few mm early — at high Z (mid travel and up)**. ⚠️ Fix unproven — test with a hand on the power button |
 
 ---
 
@@ -1571,6 +1571,20 @@ Remove `[include toolhead-maintenance.cfg]` from `printer.cfg` and `FIRMWARE_RES
 ## Fix 14 — `G28` homes Y into the corner that pinches the filament tube
 
 **Cost:** free · **Severity:** damages the tube; sensorless Y false-triggers a few mm off · **Files:** `printer.cfg`
+
+> ⚠️ **Not yet proven — test this one with a hand on the power button.**
+>
+> This fix is several edits deep and it changes what `G28` is allowed to do before the
+> machine knows where it is. An intermediate state *can* drive the nozzle into the bed at
+> full Z travel — that happened here during development, from a homing path that authorised
+> a long blind descent with the head off the plate. Every homing path below has been tested
+> green on one printer, but that is one printer, one firmware build
+> (`v0.12.0-0-g02eeceb`), and no long-term running.
+>
+> Until it has more miles: stand at the machine, hand on the PSU switch or plug, for the
+> first `G28`, `G28 X`, `G28 Y`, `G28 Z` and cold bare `G28` after applying it. Kill power
+> the moment the toolhead moves down when it should move up, or moves in XY while off the
+> plate. Do not run it unattended and do not start a print on the strength of one good home.
 
 ### Symptoms
 
