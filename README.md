@@ -17,6 +17,7 @@ Twelve things on a stock **Sovol SV08** that you will hit sooner or later — pl
 11. **Your printer beacons to a cloud service you never signed up for**, every two seconds, forever — broadcasting its local IP and hostname to `app.obico.io`, unlinked, with crash telemetry opted in on your behalf. ← this one costs you privacy
 12. **The SSH host keys were generated at the factory in December 2023 and shipped to every unit** — and the default user has passwordless `sudo`. ← this one costs you the machine
 13. **There's no one-button way to park the head for maintenance.** You hand-jog three axes every time you want to reach the nozzle or wipe the bed — and jog Y the wrong way and you crash into the back frame. ← the one thing here to *add*, not fix
+14. **`G28` homes Y into the one corner where the filament tube gets pinched — and sensorless homing false-triggers on the drag.** Sovol homes both X and Y positive, into the right-rear corner. The tube binds between toolhead and frame there, StallGuard reads the drag as a stall, and Y stops a few mm early. Sovol's answer is `set_position_z: 0` plus a blind `G0 Z5`, which throws away a known-good Z to lift over the problem. Home X to the *left* instead and the corner never happens. ← costs you a few mm of Y, silently, and chews the tube
 
 The first three are annoyances. **[Fix 4](#fix-4--a-paused-print-goes-cold-after-30-minutes-and-is-ruined) will destroy a 20-hour job** — pause for a filament change, get distracted, come back to a cold printer and a part that has let go of the bed. **[Fix 5](#fix-5--the-bed-is-warped--and-no-diy-fix-actually-works) is the one that quietly taxes every single print you make**, and it is the only one here whose real answer is "buy a new part".
 
@@ -49,6 +50,7 @@ Most of this isn't even SV08-exclusive: the timelapse bug hits any `moonraker-ti
 | [11](#fix-11--your-printer-announces-itself-to-a-cloud-service-you-never-signed-up-for) | Unlinked Obico beacons your LAN IP to a cloud, every 2 s, forever | Free | **Privacy + 20 MB of junk on your eMMC** |
 | [12](#fix-12--ssh-host-keys-from-the-factory-and-passwordless-root) | Factory SSH host keys on every unit + passwordless root | Free | 🔴 **Anyone on your LAN owns the printer** |
 | [13](#fix-13--theres-no-one-button-way-to-park-the-head-for-maintenance) | No one-button park-for-maintenance position — hand-jog every time | Free | ➕ Add-on, not a defect |
+| [14](#fix-14--g28-homes-y-into-the-corner-that-pinches-the-filament-tube) | `G28` homes X and Y into the right-rear corner, pinching the filament tube | Free | **Damages the tube; sensorless Y false-triggers a few mm early** |
 
 ---
 
@@ -1563,6 +1565,191 @@ On a stock SV08 `position` should read ~`[177.5, 5.0, 173.5, …]` and `homed_ax
 
 Remove `[include toolhead-maintenance.cfg]` from `printer.cfg` and `FIRMWARE_RESTART`
 (optionally delete the file). Nothing else references it.
+
+---
+
+## Fix 14 — `G28` homes Y into the corner that pinches the filament tube
+
+**Cost:** free · **Severity:** damages the tube; sensorless Y false-triggers a few mm off · **Files:** `printer.cfg`
+
+### Symptoms
+
+Your filament tube is scuffed, kinked or worn where it meets the toolhead. And every so
+often `G28` completes without an error but Y lands a few mm short — first layer off in Y,
+a print that starts off the plate, nothing in the log.
+
+### What's wrong
+
+Stock `printer.cfg` homes **both** axes positive:
+
+```ini
+[stepper_x]
+position_endstop: 355
+homing_positive_dir: True
+
+[stepper_y]
+position_endstop: 364
+homing_positive_dir: true
+```
+
+X to the right, Y to the rear — so every home ends in the **right-rear corner**. That is
+exactly where the filament tube gets trapped between the toolhead and the frame. Every
+home works the tube against the frame. That's the wear.
+
+It also costs you accuracy, because X and Y are **sensorless** — TMC2209 StallGuard4,
+`driver_sgthrs: 65`, `diag_pin: PE15`/`PE13`, `stealthchop_threshold: 0`. There is no
+switch. The driver watches motor load and reports a stall as an endstop trigger. On the
+TMC2209 a *higher* `SGTHRS` means *more sensitive*, and 65 does not leave much margin.
+Tube drag is load. The toolhead meets that drag part-way through the approach, StallGuard
+fires early, and Klipper sets Y zero **before** the toolhead ever reached the frame. It's
+a false trigger, not lost steps — which is why it's silent, and why it repeats at some
+gantry heights and not others.
+
+Sovol's own workaround is to lift over the problem, and it makes things worse. Their
+`[homing_override]` ends with:
+
+```ini
+axes: xyz
+set_position_z: 0
+```
+
+`set_position_z` tells Klipper "assume Z is 0 and stop checking it" — Klipper's docs say
+so in the same paragraph: *"Setting this disables homing checks for that axis."* Sovol
+applies it **unconditionally**, including when Z is homed and Klipper knows the true
+height to the micron. So the `G0 Z5 F300` on the next line is not a move to Z 5. The
+gantry is *actually* at, say, 160 mm, Klipper has been told 0, so "go to 5" moves **+5 mm,
+to a real 165**. The limit check runs against the fabricated number and passes. Nothing is
+logged.
+
+### Fix — home into a different corner
+
+Only X has to change. Home it to the **left**, and the head is already clear before Y ever
+runs back, so the corner never happens. Y stays stock.
+
+```ini
+[stepper_x]
+position_endstop: 0           # was 355
+homing_positive_dir: False    # was True
+```
+
+Then rewrite `[homing_override]` — drop `set_position_z: 0`, back X off to the left, and
+home **X first, then Y**:
+
+```gcode
+   {% elif not 'Z' in params and 'X' in params and 'Y' in params %}
+     _PRE_HOME_LIFT
+     G28 X
+     G0 X7 F1200
+     G4 P2000
+     G28 Y
+     G0 Y357 F1200
+```
+
+```ini
+axes: xyz
+```
+
+**Your X origin moves.** Klipper used to be told "the trigger point is X355"; now it's
+told "the trigger point is X0". Those agree only if the real travel is exactly 355 mm. It
+won't be, quite. Whatever the difference is, your whole X coordinate frame shifts by it —
+which puts bed mesh, `quad_gantry_level` points and probe offsets off by the same amount.
+If print placement matters to you, home, jog the nozzle to the physical left edge of the
+bed, read the offset and feed it back into `position_endstop`.
+
+### Lift before every XY move, never descend blind
+
+Homing Z on this printer *is* probing — the Z endstop is the inductive probe
+(`probe:z_virtual_endstop`), so it only stops when there is metal underneath. Two rules
+fall out of that, and both are load-bearing:
+
+```gcode
+[gcode_macro _PRE_HOME_LIFT]
+description: Upward-only 5mm Z lift before any XY motion during homing
+gcode:
+   {% set th = printer.toolhead %}
+   G90
+   {% if 'z' in th.homed_axes %}
+     {% if th.axis_maximum.z - th.position.z > 5.5 %}
+       G91
+       G1 Z5 F600
+       G90
+     {% endif %}
+   {% else %}
+     FORCE_MOVE STEPPER=stepper_z  DISTANCE=5 VELOCITY=5
+     FORCE_MOVE STEPPER=stepper_z1 DISTANCE=5 VELOCITY=5
+     FORCE_MOVE STEPPER=stepper_z2 DISTANCE=5 VELOCITY=5
+     FORCE_MOVE STEPPER=stepper_z3 DISTANCE=5 VELOCITY=5
+   {% endif %}
+```
+
+Call it at the head of **every** branch that moves X or Y — including the `G28 Z` branch,
+which traverses to bed centre and would otherwise drag the nozzle across the plate. It only
+ever goes up. Note it uses `FORCE_MOVE` on all four Z steppers rather than
+`SET_KINEMATIC_POSITION` for the unhomed case: on this Klipper,
+`SET_KINEMATIC_POSITION Z=0` marks **x, y and z** as homed even though you only passed `Z=`.
+That leaves Y flagged homed at 0 after a cold `G28 X` while the gantry is physically at the
+rear — jog Y from there and it drives against a false origin. `FORCE_MOVE` never touches
+homed state. It moves the four motors one at a time, so the gantry sits skewed by up to
+5 mm between them; the next `QUAD_GANTRY_LEVEL` corrects it. `[force_move]` with
+`enable_force_move: True` is already in the stock `Macro.cfg`.
+
+Second rule, and this is the one that will bite you: **`SET_KINEMATIC_POSITION Z=347` must
+come before the traverse to bed centre, not after.**
+
+```gcode
+     {% if not z_known %}
+       SET_KINEMATIC_POSITION Z=347
+     {% endif %}
+     G0  X191 Y165 F3600
+     G28 Z
+     G0  Z10 F600
+```
+
+`Z=347` fabricates a worst-case top so the probing move has the full travel available to
+reach the bed. It authorizes a very long descent, so it is only safe over the plate — which
+is why the traverse has to succeed first. And with Z unhomed, that traverse **is rejected**:
+
+```
+!! Must home axis first: 24.298 338.950 -0.019
+```
+
+A pure XY move shouldn't be checked against Z limits, but `FORCE_MOVE` and
+`SET_KINEMATIC_POSITION` desync `gcode_move`'s last position from the kinematics, so the
+move carries a residual Z delta of about 0.02 mm — enough to stop being a pure-XY move and
+trip the unhomed-Z check. Put the fabrication first and the traverse is legal. Put it
+second and the traverse is silently refused, the head stays wherever it was, and `G28 Z`
+then descends 347 mm at that position. If that position is a corner, there is no plate
+under the probe, nothing triggers, and **the nozzle is driven into the bed.** That is not
+hypothetical — it is how this section got written.
+
+### Verify
+
+```bash
+# from a genuine cold start
+curl -s -X POST "http://<printer>:7125/printer/firmware_restart"
+curl -s -X POST "http://<printer>:7125/printer/gcode/script?script=G28"
+curl -s "http://<printer>:7125/printer/objects/query?toolhead=position,homed_axes" | python3 -m json.tool
+```
+
+`homed_axes` should read `"xyz"` and the head should end at bed centre. Then check the
+single-axis case, which is where the false-homing bug shows:
+
+```bash
+curl -s -X POST "http://<printer>:7125/printer/firmware_restart"
+curl -s -X POST "http://<printer>:7125/printer/gcode/script?script=G28%20X"
+```
+
+`homed_axes` must read `"x"` — not `"xyz"`. If it reads `"xyz"` you are still fabricating
+coordinates with `SET_KINEMATIC_POSITION` somewhere in the lift path.
+
+Repeated `G28`s from different starting heights should land Y on the same number every
+time. Before the fix they don't.
+
+### Revert
+
+Restore your backup of `printer.cfg` and `FIRMWARE_RESTART`. Take one *before* you start —
+this fix is several edits deep and the intermediate states can drive the toolhead into the
+bed.
 
 ---
 
